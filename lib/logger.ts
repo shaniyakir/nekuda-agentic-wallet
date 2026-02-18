@@ -19,6 +19,7 @@ type LogNamespace =
   | "NEKUDA"
   | "AUTH"
   | "STRIPE"
+  | "SESSION"
   | "RATE_LIMIT";
 
 interface Logger {

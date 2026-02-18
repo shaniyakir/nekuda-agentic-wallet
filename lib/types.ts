@@ -128,6 +128,10 @@ export const AgentSessionStateSchema = z.object({
   stripePaymentIntentId: z.string().nullable(),
   paymentStatus: z.enum(["pending", "succeeded", "failed"]).nullable(),
 
+  // Credential TTL tracking
+  /** ISO timestamp when card details were last revealed. Used for CVV TTL enforcement (60-min window). */
+  credentialsRevealedAt: z.string().nullable(),
+
   // Error
   error: z.string().nullable(),
 
