@@ -19,6 +19,9 @@ import Stripe from "stripe";
 import { PayRequestSchema } from "@/lib/types";
 import { cartRepo } from "@/lib/merchant/cart-repo";
 import { productRepo } from "@/lib/merchant/product-repo";
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger("MERCHANT");
 
 function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;
@@ -72,9 +75,11 @@ export async function POST(request: NextRequest) {
   if (mandateAmount !== undefined) {
     const drift = Math.abs(mandateAmount - serverTotal);
     if (drift > 0.01) {
-      console.warn(
-        `[PAY] Price drift detected: mandate=$${mandateAmount}, server=$${serverTotal}, drift=$${drift.toFixed(2)}`
-      );
+      log.warn("Price drift detected", {
+        mandateAmount,
+        serverTotal,
+        drift: Number(drift.toFixed(2)),
+      });
     }
   }
 
@@ -102,32 +107,39 @@ export async function POST(request: NextRequest) {
     });
 
     // 7. Create and confirm a PaymentIntent using server-calculated amount
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(serverTotal * 100), // Stripe expects cents
-      currency: "usd",
-      payment_method: paymentMethod.id,
-      confirm: true,
-      automatic_payment_methods: {
-        enabled: true,
-        allow_redirects: "never",
+    //    Idempotency key prevents double-charging on network retries.
+    const paymentIntent = await stripe.paymentIntents.create(
+      {
+        amount: Math.round(serverTotal * 100), // Stripe expects cents
+        currency: "usd",
+        payment_method: paymentMethod.id,
+        confirm: true,
+        automatic_payment_methods: {
+          enabled: true,
+          allow_redirects: "never",
+        },
+        metadata: {
+          checkoutId,
+          cartId: cart.id,
+          userId: cart.userId,
+        },
       },
-      metadata: {
-        checkoutId,
-        cartId: cart.id,
-        userId: cart.userId,
-      },
-    });
+      { idempotencyKey: `pay_${checkoutId}` }
+    );
 
     // 8. Mark cart as paid + decrement stock
     const markResult = cartRepo.markPaid(checkoutId);
     if ("error" in markResult) {
-      console.error(`[PAY] Post-payment error: ${markResult.error}`);
+      log.error("Post-payment stock update failed", { error: markResult.error, checkoutId });
       // Payment went through but stock update failed — log for manual review
     }
 
-    console.info(
-      `[PAY] Settlement successful: PI=${paymentIntent.id}, amount=$${serverTotal}, user=${cart.userId}`
-    );
+    log.info("Settlement successful", {
+      paymentIntentId: paymentIntent.id,
+      amount: serverTotal,
+      userId: cart.userId,
+      checkoutId,
+    });
 
     return NextResponse.json({
       orderId: cart.id,
@@ -138,7 +150,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown payment error";
-    console.error(`[PAY] Stripe error: ${message}`);
+    log.error("Stripe error", { error: message, checkoutId });
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
