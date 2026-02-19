@@ -1,65 +1,75 @@
-import Image from "next/image";
+import Link from "next/link";
+import { Wallet, MessageSquare, LayoutDashboard, ShieldCheck } from "lucide-react";
+
+const features = [
+  {
+    href: "/wallet",
+    icon: Wallet,
+    title: "Wallet",
+    description: "Manage your Nekuda wallet, add cards, and handle CVV collection securely.",
+    color: "text-violet-500",
+    bg: "bg-violet-500/10",
+  },
+  {
+    href: "/chat",
+    icon: MessageSquare,
+    title: "AI Assistant",
+    description: "Chat with our AI agent to browse products, compare prices, and checkout.",
+    color: "text-blue-500",
+    bg: "bg-blue-500/10",
+  },
+  {
+    href: "/dashboard",
+    icon: LayoutDashboard,
+    title: "Dashboard",
+    description: "Monitor agent state, cart contents, payment status, and errors in real-time.",
+    color: "text-emerald-500",
+    bg: "bg-emerald-500/10",
+  },
+] as const;
 
 export default function Home() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="flex min-h-[calc(100vh-3.5rem)] flex-col items-center justify-center px-4 py-16">
+      <div className="mx-auto max-w-3xl text-center">
+        <div className="mb-6 inline-flex items-center gap-2 rounded-full border bg-muted/50 px-3 py-1 text-sm text-muted-foreground">
+          <ShieldCheck className="size-4 text-emerald-500" />
+          Card credentials never touch the LLM
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+
+        <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">
+          AI-Powered Shopping
+          <span className="block bg-gradient-to-r from-violet-500 to-blue-500 bg-clip-text text-transparent">
+            with Secure Payments
+          </span>
+        </h1>
+
+        <p className="mt-4 text-lg text-muted-foreground">
+          ByteShop combines a conversational AI agent with Nekuda&apos;s secure wallet
+          infrastructure. Browse products, build a cart, and pay — all through chat.
+        </p>
+      </div>
+
+      <div className="mt-12 grid w-full max-w-3xl gap-4 sm:grid-cols-3">
+        {features.map(({ href, icon: Icon, title, description, color, bg }) => (
+          <Link
+            key={href}
+            href={href}
+            className="group rounded-xl border bg-card p-6 transition-all hover:shadow-md hover:border-primary/20"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+            <div className={`mb-4 inline-flex rounded-lg p-2.5 ${bg}`}>
+              <Icon className={`size-5 ${color}`} />
+            </div>
+            <h2 className="font-semibold">{title}</h2>
+            <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+              {description}
+            </p>
+            <span className="mt-3 inline-flex text-sm font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
+              Open &rarr;
+            </span>
+          </Link>
+        ))}
+      </div>
     </div>
   );
 }

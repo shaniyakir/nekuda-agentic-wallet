@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.29",
+    "@ai-sdk/react": "^3.0.93",
     "@langfuse/otel": "^4.6.1",
     "@langfuse/tracing": "^4.6.1",
     "@nekuda/nekuda-js": "^0.2.14",

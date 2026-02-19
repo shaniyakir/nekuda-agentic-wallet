@@ -1,0 +1,206 @@
+"use client";
+
+import { useRef, useEffect, useState, type FormEvent } from "react";
+import { useChat } from "@ai-sdk/react";
+import { useUser } from "@/components/providers/user-provider";
+import { useChatInstance } from "@/components/providers/chat-provider";
+import { ToolCallDisplay } from "@/components/chat/tool-call-display";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
+import {
+  Send,
+  Loader2,
+  AlertCircle,
+  Bot,
+  User as UserIcon,
+} from "lucide-react";
+
+export function ChatInterface() {
+  const { userId } = useUser();
+  const chat = useChatInstance();
+  const [input, setInput] = useState("");
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const { messages, sendMessage, status, error } = useChat(
+    chat
+      ? { chat, onError: (err) => console.error("Chat error:", err) }
+      : { onError: (err) => console.error("Chat error:", err) }
+  );
+
+  const isStreaming = status === "streaming" || status === "submitted";
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages]);
+
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text || isStreaming) return;
+    setInput("");
+    sendMessage({ text });
+  }
+
+  if (!userId) {
+    return (
+      <div className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center">
+        <div className="text-center">
+          <AlertCircle className="mx-auto size-12 text-muted-foreground/50" />
+          <h2 className="mt-4 text-xl font-semibold">Sign in required</h2>
+          <p className="mt-2 text-muted-foreground">
+            Visit the{" "}
+            <a href="/wallet" className="font-medium text-primary underline">
+              Wallet page
+            </a>{" "}
+            to sign in before chatting.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-[calc(100vh-3.5rem)] flex-col">
+      <ScrollArea className="flex-1 px-4">
+        <div className="mx-auto max-w-2xl py-6">
+          {messages.length === 0 && (
+            <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
+              <Bot className="size-10 text-muted-foreground/40" />
+              <h2 className="text-lg font-medium">ByteShop Assistant</h2>
+              <p className="max-w-sm text-sm text-muted-foreground">
+                I can help you browse products, build a cart, and complete your
+                purchase securely through your Nekuda wallet.
+              </p>
+            </div>
+          )}
+
+          {messages.map((message) => (
+            <div
+              key={message.id}
+              className={cn(
+                "mb-4 flex gap-3",
+                message.role === "user" ? "justify-end" : "justify-start"
+              )}
+            >
+              {message.role === "assistant" && (
+                <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                  <Bot className="size-4" />
+                </div>
+              )}
+
+              <div
+                className={cn(
+                  "max-w-[80%] space-y-2",
+                  message.role === "user" ? "order-first" : ""
+                )}
+              >
+                {message.parts.map((part, i) => {
+                  if (part.type === "text" && part.text.trim()) {
+                    return (
+                      <div
+                        key={`text-${i}`}
+                        className={cn(
+                          "rounded-xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
+                          message.role === "user"
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-muted"
+                        )}
+                      >
+                        {part.text}
+                      </div>
+                    );
+                  }
+
+                  if (part.type.startsWith("tool-") || part.type === "dynamic-tool") {
+                    const toolPart = part as {
+                      toolCallId: string;
+                      toolName: string;
+                      state: string;
+                      input?: unknown;
+                      output?: unknown;
+                    };
+                    return (
+                      <ToolCallDisplay
+                        key={toolPart.toolCallId}
+                        toolInvocation={{
+                          toolCallId: toolPart.toolCallId,
+                          toolName: toolPart.toolName,
+                          args: (toolPart.input ?? {}) as Record<string, unknown>,
+                        }}
+                        toolResult={
+                          toolPart.state === "output-available"
+                            ? {
+                                toolCallId: toolPart.toolCallId,
+                                toolName: toolPart.toolName,
+                                result: toolPart.output,
+                              }
+                            : undefined
+                        }
+                      />
+                    );
+                  }
+
+                  return null;
+                })}
+              </div>
+
+              {message.role === "user" && (
+                <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted">
+                  <UserIcon className="size-4" />
+                </div>
+              )}
+            </div>
+          ))}
+
+          {isStreaming && messages.at(-1)?.role !== "assistant" && (
+            <div className="mb-4 flex gap-3">
+              <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                <Bot className="size-4" />
+              </div>
+              <div className="flex items-center gap-2 rounded-xl bg-muted px-4 py-2.5">
+                <Loader2 className="size-4 animate-spin" />
+                <span className="text-sm text-muted-foreground">Thinking…</span>
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="mb-4 flex items-center gap-2 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3">
+              <AlertCircle className="size-4 text-destructive" />
+              <p className="text-sm text-destructive">{error.message}</p>
+            </div>
+          )}
+
+          <div ref={scrollRef} />
+        </div>
+      </ScrollArea>
+
+      <div className="border-t bg-background p-4">
+        <form
+          onSubmit={handleSubmit}
+          className="mx-auto flex max-w-2xl items-center gap-2"
+        >
+          <Input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ask about products, build a cart, or start a purchase…"
+            disabled={isStreaming}
+            className="flex-1"
+            autoFocus
+          />
+          <Button type="submit" size="icon" disabled={isStreaming || !input.trim()}>
+            {isStreaming ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Send className="size-4" />
+            )}
+          </Button>
+        </form>
+      </div>
+    </div>
+  );
+}
