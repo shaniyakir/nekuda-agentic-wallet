@@ -15,19 +15,13 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import Stripe from "stripe";
 import { PayRequestSchema } from "@/lib/types";
 import { cartRepo } from "@/lib/merchant/cart-repo";
 import { productRepo } from "@/lib/merchant/product-repo";
 import { createLogger } from "@/lib/logger";
+import { stripe } from "@/lib/stripe";
 
 const log = createLogger("MERCHANT");
-
-function getStripe(): Stripe {
-  const key = process.env.STRIPE_SECRET_KEY;
-  if (!key) throw new Error("STRIPE_SECRET_KEY not set");
-  return new Stripe(key);
-}
 
 export async function POST(request: NextRequest) {
   // 1. Validate request body
@@ -93,8 +87,6 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const stripe = getStripe();
-
     // 6. Create a Stripe PaymentMethod from the revealed card
     const paymentMethod = await stripe.paymentMethods.create({
       type: "card",

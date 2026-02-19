@@ -4,6 +4,10 @@
  * Tracks agent state per session so the dashboard can poll for live updates.
  * Each tool call updates the relevant fields; the chat API reads/writes here.
  *
+ * SECURITY: Card credentials are stored in a separate private vault (credentialVault).
+ * The vault is never exposed to the LLM, dashboard, or Langfuse traces.
+ * Only executePayment reads from it — credentials stay server-side at all times.
+ *
  * TTL eviction policy (lazy — checked on every get/set):
  *   - Completed sessions: evicted 30 min after completedAt
  *   - Abandoned sessions:  evicted 60 min after createdAt (never completed)
@@ -11,7 +15,7 @@
  * Production upgrade: Replace with Redis for multi-instance deployments.
  */
 
-import type { AgentSessionState } from "@/lib/types";
+import type { AgentSessionState, PaymentCredentials } from "@/lib/types";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger("SESSION");
@@ -25,6 +29,45 @@ const COMPLETED_TTL_MS = 30 * 60 * 1000;
 
 /** How long to keep an abandoned session (60 min) */
 const ABANDONED_TTL_MS = 60 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Credential Vault — PAN/CVV isolation (never exposed to LLM or dashboard)
+// ---------------------------------------------------------------------------
+
+interface StoredCredentials extends PaymentCredentials {
+  isVisaPayment: boolean;
+  billingAddress: string | null;
+  zipCode: string | null;
+}
+
+const credentialVault = new Map<string, StoredCredentials>();
+
+/**
+ * Store revealed card credentials server-side. Never returned to the LLM.
+ */
+export function storeCredentials(
+  sessionId: string,
+  credentials: StoredCredentials
+): void {
+  credentialVault.set(sessionId, credentials);
+  log.info("Credentials stored in vault", { sessionId });
+}
+
+/**
+ * Retrieve stored credentials for payment processing. Returns null if not found.
+ */
+export function getCredentials(sessionId: string): StoredCredentials | null {
+  return credentialVault.get(sessionId) ?? null;
+}
+
+/**
+ * Clear credentials after payment or on session eviction.
+ */
+export function clearCredentials(sessionId: string): void {
+  if (credentialVault.delete(sessionId)) {
+    log.info("Credentials cleared from vault", { sessionId });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Internal session entry — wraps AgentSessionState with timestamps
@@ -142,6 +185,7 @@ export function updateSession(
  */
 export function deleteSession(sessionId: string): boolean {
   const deleted = store.delete(sessionId);
+  credentialVault.delete(sessionId);
   if (deleted) {
     log.info("Session deleted", { sessionId });
   }
@@ -178,6 +222,7 @@ function evictExpired(): void {
 
     if (shouldEvict) {
       store.delete(sessionId);
+      credentialVault.delete(sessionId);
       evictedCount++;
     }
   }
