@@ -12,6 +12,7 @@ import { createContext, useContext, useMemo, type ReactNode } from "react";
 import { Chat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { useUser } from "@/components/providers/user-provider";
+import { hashSessionId } from "@/lib/logger";
 
 const transport = new DefaultChatTransport({
   api: "/api/agent/chat",
@@ -29,7 +30,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<ChatContextValue>(() => {
     if (!userId) return { chat: null, chatId: null };
-    const id = `agent_${userId}`;
+    const id = hashSessionId(userId);
     return {
       chat: new Chat<UIMessage>({ id, transport }),
       chatId: id,

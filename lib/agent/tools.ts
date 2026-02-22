@@ -30,7 +30,7 @@ import {
   getPaymentMethodId,
   clearPaymentMethodId,
 } from "@/lib/agent/session-store";
-import { createLogger } from "@/lib/logger";
+import { createLogger, redactEmail } from "@/lib/logger";
 
 const log = createLogger("AGENT");
 
@@ -99,7 +99,7 @@ export function createToolSet(meta: ToolMeta) {
           cartStatus: "active",
           cartTotal: 0,
         });
-        log.info("Cart created", { cartId: cart.id, userId });
+        log.info("Cart created", { cartId: cart.id, userId: redactEmail(userId) });
         return { cartId: cart.id, status: cart.status };
       },
     }),
@@ -200,7 +200,7 @@ export function createToolSet(meta: ToolMeta) {
             mandateId: result.mandateId,
             mandateStatus: "approved",
           });
-          log.info("Mandate created", { mandateId: result.mandateId, userId, price });
+          log.info("Mandate created", { mandateId: result.mandateId, userId: redactEmail(userId), price });
           return {
             mandateId: result.mandateId,
             status: "approved",
@@ -221,18 +221,38 @@ export function createToolSet(meta: ToolMeta) {
           .describe("Mandate ID from createMandate"),
       }),
       execute: async ({ mandateId }) => {
+        // Step 2a: Get reveal token (Nekuda API)
+        let tokenResult;
         try {
           const user = nekuda.user(userId);
-
-          // Step 2a: Get reveal token (kept server-side, never sent to LLM)
-          const tokenResult = await user.requestCardRevealToken(String(mandateId));
+          tokenResult = await user.requestCardRevealToken(String(mandateId));
           updateSession(sessionId, { revealTokenObtained: true });
-          log.info("Reveal token obtained", { mandateId, userId });
+          log.info("Reveal token obtained", { mandateId, userId: redactEmail(userId) });
+        } catch (err) {
+          return handleNekudaError(err, "requestCardRevealToken", sessionId);
+        }
 
-          // Step 2b: Reveal card details (ephemeral — never stored)
-          const card = await user.revealCardDetails(tokenResult.revealToken);
+        // Step 2b: Reveal card details (Nekuda API — CVV expired can occur here)
+        let card;
+        try {
+          const user = nekuda.user(userId);
+          card = await user.revealCardDetails(tokenResult.revealToken);
+        } catch (err) {
+          if (err instanceof NekudaApiError && isCvvExpiredError(err)) {
+            log.warn("CVV expired during reveal", { userId: redactEmail(userId) });
+            updateSession(sessionId, { credentialsRevealed: false, credentialsRevealedAt: null });
+            return {
+              error: "CVV_EXPIRED",
+              action: "collect_cvv",
+              message:
+                "Card CVV has expired. User must re-enter CVV on the wallet page before retrying.",
+            };
+          }
+          return handleNekudaError(err, "revealCardDetails", sessionId);
+        }
 
-          // Step 2c: Immediately tokenize via Stripe publishable key
+        // Step 2c: Tokenize via Stripe publishable key (Stripe API)
+        try {
           const [expMonth, expYear] = (card.cardExpiryDate ?? "01/28")
             .split("/")
             .map(Number);
@@ -243,7 +263,6 @@ export function createToolSet(meta: ToolMeta) {
             cvc: card.cardCvv ?? "",
           });
 
-          // Store only the Stripe PaymentMethod ID — raw card data is discarded
           storePaymentMethodId(sessionId, paymentMethod.id);
 
           const now = new Date().toISOString();
@@ -253,7 +272,7 @@ export function createToolSet(meta: ToolMeta) {
           });
 
           log.info("Card revealed, tokenized, and PM stored", {
-            userId,
+            userId: redactEmail(userId),
             last4: card.last4Digits ?? "N/A",
             paymentMethodId: paymentMethod.id,
           });
@@ -264,17 +283,10 @@ export function createToolSet(meta: ToolMeta) {
             message: "Card tokenized and secured. Ready for payment.",
           };
         } catch (err) {
-          if (err instanceof NekudaApiError && isCvvExpiredError(err)) {
-            log.warn("CVV expired during reveal", { userId });
-            updateSession(sessionId, { credentialsRevealed: false, credentialsRevealedAt: null });
-            return {
-              error: "CVV_EXPIRED",
-              action: "collect_cvv",
-              message:
-                "Card CVV has expired. User must re-enter CVV on the wallet page before retrying.",
-            };
-          }
-          return handleNekudaError(err, "requestCardRevealToken", sessionId);
+          const message = err instanceof Error ? err.message : "Card tokenization failed";
+          log.error("Stripe tokenization failed", { error: message, userId: redactEmail(userId) });
+          updateSession(sessionId, { error: message });
+          return { error: "TOKENIZATION_FAILED", message, retryable: true };
         }
       },
     }),
@@ -332,7 +344,7 @@ export function createToolSet(meta: ToolMeta) {
               payment_method: paymentMethodId,
               confirm: true,
               automatic_payment_methods: { enabled: true, allow_redirects: "never" },
-              metadata: { checkoutId, cartId: cart.id, userId },
+              metadata: { checkoutId, cartId: cart.id, userId: redactEmail(userId) },
             },
             { idempotencyKey: `pay_${checkoutId}` }
           );
@@ -350,7 +362,7 @@ export function createToolSet(meta: ToolMeta) {
           log.info("Payment succeeded", {
             paymentIntentId: paymentIntent.id,
             amount: serverTotal,
-            userId,
+            userId: redactEmail(userId),
           });
 
           return {

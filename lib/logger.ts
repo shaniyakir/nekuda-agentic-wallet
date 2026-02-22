@@ -7,7 +7,7 @@
  *
  * Usage:
  *   const log = createLogger('MERCHANT');
- *   log.info('Cart created', { cartId, userId });
+ *   log.info('Cart created', { cartId, userId: redactEmail(userId) });
  *   // → 2026-02-18T12:00:00.000Z [MERCHANT] INFO Cart created {"cartId":"abc","userId":"u1"}
  */
 
@@ -65,4 +65,33 @@ export function createLogger(namespace: LogNamespace): Logger {
     warn: (message, meta) => emit("WARN", namespace, message, meta),
     error: (message, meta) => emit("ERROR", namespace, message, meta),
   };
+}
+
+/**
+ * Derive a deterministic, PII-free session ID from a userId (email).
+ * Uses djb2 hash → 12-char hex string. Works in both Node.js and browser.
+ */
+export function hashSessionId(userId: string): string {
+  let h1 = 5381;
+  let h2 = 52711;
+  for (let i = 0; i < userId.length; i++) {
+    const c = userId.charCodeAt(i);
+    h1 = ((h1 << 5) + h1 + c) >>> 0;
+    h2 = ((h2 << 5) + h2 + c) >>> 0;
+  }
+  const hex = (h1 >>> 0).toString(16).padStart(8, "0") + (h2 >>> 0).toString(16).padStart(8, "0");
+  return `agent_${hex.slice(0, 12)}`;
+}
+
+/**
+ * Redact an email for safe logging: "shani.yakir1@gmail.com" → "sh***@gm***.com"
+ */
+export function redactEmail(email: string): string {
+  const [local, domain] = email.split("@");
+  if (!domain) return "***";
+  const [domainName, ...tldParts] = domain.split(".");
+  const tld = tldParts.join(".");
+  const redactedLocal = local.length <= 2 ? local[0] + "***" : local.slice(0, 2) + "***";
+  const redactedDomain = domainName.length <= 2 ? domainName[0] + "***" : domainName.slice(0, 2) + "***";
+  return `${redactedLocal}@${redactedDomain}.${tld}`;
 }

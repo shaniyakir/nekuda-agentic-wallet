@@ -48,6 +48,25 @@ vi.mock("@/lib/logger", () => ({
     error: vi.fn(),
     debug: vi.fn(),
   }),
+  redactEmail: (email: string) => {
+    const [local, domain] = email.split("@");
+    if (!domain) return "***";
+    const [domainName, ...tldParts] = domain.split(".");
+    const tld = tldParts.join(".");
+    const rl = local.length <= 2 ? local[0] + "***" : local.slice(0, 2) + "***";
+    const rd = domainName.length <= 2 ? domainName[0] + "***" : domainName.slice(0, 2) + "***";
+    return `${rl}@${rd}.${tld}`;
+  },
+  hashSessionId: (userId: string) => {
+    let h1 = 5381, h2 = 52711;
+    for (let i = 0; i < userId.length; i++) {
+      const c = userId.charCodeAt(i);
+      h1 = ((h1 << 5) + h1 + c) >>> 0;
+      h2 = ((h2 << 5) + h2 + c) >>> 0;
+    }
+    const hex = (h1 >>> 0).toString(16).padStart(8, "0") + (h2 >>> 0).toString(16).padStart(8, "0");
+    return `agent_${hex.slice(0, 12)}`;
+  },
 }));
 
 import { POST } from "@/app/api/agent/chat/route";
@@ -144,7 +163,7 @@ describe("POST /api/agent/chat", () => {
     expect(streamOpts.system).toBe("test-system-prompt");
     expect(streamOpts.model).toEqual({ provider: "openai", model: "gpt-4o" });
     expect(streamOpts.experimental_telemetry.isEnabled).toBe(true);
-    expect(streamOpts.experimental_telemetry.metadata.userId).toBe("u@test.com");
+    expect(streamOpts.experimental_telemetry.metadata.userId).toBe("u***@te***.com");
   });
 
   it("generates a sessionId when none provided", async () => {
@@ -158,7 +177,7 @@ describe("POST /api/agent/chat", () => {
     );
 
     const callArgs = mockGetOrCreateSession.mock.calls[0];
-    expect(callArgs[0]).toMatch(/^agent_u@test\.com_\d+$/);
+    expect(callArgs[0]).toMatch(/^agent_[0-9a-f]{12}$/);
     expect(callArgs[1]).toBe("u@test.com");
   });
 

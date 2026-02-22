@@ -7,7 +7,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { verifyMagicToken, setSession } from "@/lib/auth";
-import { createLogger } from "@/lib/logger";
+import { createLogger, redactEmail } from "@/lib/logger";
 
 const log = createLogger("AUTH");
 
@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
 
   // Set the email as userId in the encrypted session
   await setSession(email);
-  log.info("User authenticated via magic link", { userId: email });
+  log.info("User authenticated via magic link", { userId: redactEmail(email) });
 
   // Redirect to wallet page
   return NextResponse.redirect(

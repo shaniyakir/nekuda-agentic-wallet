@@ -191,7 +191,9 @@ describe("requestCardRevealToken", () => {
     );
 
     const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
-    expect(result.error).toContain("Card tokenization failed");
+    expect(result.error).toBe("TOKENIZATION_FAILED");
+    expect(result.message).toContain("Card tokenization failed");
+    expect(result.retryable).toBe(true);
   });
 
   it("returns CVV_EXPIRED and clears session on CVV expired error", async () => {

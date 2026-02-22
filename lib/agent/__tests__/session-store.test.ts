@@ -56,6 +56,38 @@ describe("session-store", () => {
     expect(session?.paymentStatus).toBe("succeeded");
   });
 
+  it("resets terminal (succeeded) session on next getOrCreateSession", () => {
+    getOrCreateSession(sid, uid);
+    updateSession(sid, { paymentStatus: "succeeded", cartId: "cart_old" });
+    const fresh = getOrCreateSession(sid, uid);
+    expect(fresh.paymentStatus).toBeNull();
+    expect(fresh.cartId).toBeNull();
+  });
+
+  it("resets terminal (failed) session on next getOrCreateSession", () => {
+    getOrCreateSession(sid, uid);
+    updateSession(sid, { paymentStatus: "failed", cartId: "cart_old" });
+    const fresh = getOrCreateSession(sid, uid);
+    expect(fresh.paymentStatus).toBeNull();
+    expect(fresh.cartId).toBeNull();
+  });
+
+  it("preserves in-progress session on getOrCreateSession", () => {
+    getOrCreateSession(sid, uid);
+    updateSession(sid, { paymentStatus: "pending", cartId: "cart_active" });
+    const same = getOrCreateSession(sid, uid);
+    expect(same.paymentStatus).toBe("pending");
+    expect(same.cartId).toBe("cart_active");
+  });
+
+  it("clears PM vault when resetting terminal session", () => {
+    getOrCreateSession(sid, uid);
+    storePaymentMethodId(sid, "pm_leftover");
+    updateSession(sid, { paymentStatus: "succeeded" });
+    getOrCreateSession(sid, uid);
+    expect(getPaymentMethodId(sid)).toBeNull();
+  });
+
   it("deletes a session", () => {
     getOrCreateSession(sid, uid);
     expect(getSession(sid)).not.toBeNull();

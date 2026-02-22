@@ -23,7 +23,7 @@ import { agentRateLimiter } from "@/lib/rate-limit";
 import { createToolSet } from "@/lib/agent/tools";
 import { SYSTEM_PROMPT } from "@/lib/agent/system-prompt";
 import { getOrCreateSession } from "@/lib/agent/session-store";
-import { createLogger } from "@/lib/logger";
+import { createLogger, redactEmail, hashSessionId } from "@/lib/logger";
 
 const log = createLogger("AGENT");
 
@@ -55,7 +55,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     messages = body.messages ?? [];
-    sessionId = body.id ?? `agent_${userId}_${Date.now()}`;
+    sessionId = body.id ?? hashSessionId(userId);
   } catch {
     return NextResponse.json(
       { error: "Invalid request body" },
@@ -76,8 +76,10 @@ export async function POST(request: Request) {
   // 5. Create session-scoped tools
   const tools = createToolSet({ sessionId, userId });
 
+  const safeUserId = redactEmail(userId);
+
   log.info("Agent chat request", {
-    userId,
+    userId: safeUserId,
     sessionId,
     messageCount: messages.length,
     remaining: rateResult.remaining,
@@ -92,18 +94,18 @@ export async function POST(request: Request) {
     stopWhen: stepCountIs(15),
     experimental_telemetry: {
       isEnabled: true,
-      metadata: { userId, sessionId },
+      metadata: { userId: safeUserId, sessionId },
     },
     onError: ({ error }) => {
       log.error("streamText error", {
-        userId,
+        userId: safeUserId,
         sessionId,
         error: error instanceof Error ? error.message : String(error),
       });
     },
     onFinish: ({ steps, usage }) => {
       log.info("Agent chat completed", {
-        userId,
+        userId: safeUserId,
         sessionId,
         steps: steps.length,
         totalTokens: usage.totalTokens,

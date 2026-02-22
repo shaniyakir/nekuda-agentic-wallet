@@ -16,7 +16,7 @@
  */
 
 import type { AgentSessionState } from "@/lib/types";
-import { createLogger } from "@/lib/logger";
+import { createLogger, redactEmail } from "@/lib/logger";
 
 const log = createLogger("SESSION");
 
@@ -31,14 +31,27 @@ const COMPLETED_TTL_MS = 30 * 60 * 1000;
 const ABANDONED_TTL_MS = 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
-// Payment Method Vault — stores only Stripe PaymentMethod IDs, never raw PAN
+// Internal types
 // ---------------------------------------------------------------------------
 
-/**
- * Vault maps sessionId → Stripe PaymentMethod ID.
- * Raw card data is tokenized immediately during reveal and never stored.
- */
-const paymentMethodVault = new Map<string, string>();
+interface SessionEntry {
+  state: AgentSessionState;
+  createdAt: number;
+  completedAt: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// globalThis-backed stores — survive Next.js dev-mode HMR recompilation.
+// Without this, different route modules can get separate Map instances.
+// ---------------------------------------------------------------------------
+
+const g = globalThis as unknown as {
+  __sessionStore?: Map<string, SessionEntry>;
+  __paymentMethodVault?: Map<string, string>;
+};
+
+const store: Map<string, SessionEntry> = (g.__sessionStore ??= new Map());
+const paymentMethodVault: Map<string, string> = (g.__paymentMethodVault ??= new Map());
 
 /**
  * Store a Stripe PaymentMethod ID after tokenizing revealed card details.
@@ -66,22 +79,6 @@ export function clearPaymentMethodId(sessionId: string): void {
     log.info("PaymentMethod ID cleared from vault", { sessionId });
   }
 }
-
-// ---------------------------------------------------------------------------
-// Internal session entry — wraps AgentSessionState with timestamps
-// ---------------------------------------------------------------------------
-
-interface SessionEntry {
-  state: AgentSessionState;
-  createdAt: number;
-  completedAt: number | null;
-}
-
-// ---------------------------------------------------------------------------
-// Store
-// ---------------------------------------------------------------------------
-
-const store = new Map<string, SessionEntry>();
 
 /**
  * Create a fresh agent session state with sensible defaults.
@@ -120,15 +117,25 @@ export function getSession(sessionId: string): AgentSessionState | null {
   return entry.state;
 }
 
+const TERMINAL_PAYMENT_STATUSES = new Set(["succeeded", "failed"]);
+
 /**
  * Get or create a session. If the session doesn't exist, creates a new one.
+ * Terminal sessions (succeeded/failed) are automatically cleared so the
+ * next chat interaction starts fresh.
  */
 export function getOrCreateSession(
   sessionId: string,
   userId: string
 ): AgentSessionState {
   const existing = getSession(sessionId);
-  if (existing) return existing;
+  if (existing) {
+    if (!TERMINAL_PAYMENT_STATUSES.has(existing.paymentStatus ?? "")) {
+      return existing;
+    }
+    log.info("Clearing terminal session", { sessionId, status: existing.paymentStatus });
+    deleteSession(sessionId);
+  }
 
   const state = createSessionState(sessionId, userId);
   store.set(sessionId, {
@@ -137,7 +144,7 @@ export function getOrCreateSession(
     completedAt: null,
   });
 
-  log.info("Session created", { sessionId, userId });
+  log.info("Session created", { sessionId, userId: redactEmail(userId) });
   return state;
 }
 
