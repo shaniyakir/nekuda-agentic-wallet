@@ -1,9 +1,7 @@
 import type { NextConfig } from "next";
 
-const nextConfig: NextConfig = {
-  experimental: {
-    instrumentationHook: true,
-  },
-};
+// instrumentationHook is enabled by default in Next.js 15+ (no longer experimental).
+// instrumentation.ts is auto-loaded for Langfuse/OpenTelemetry tracing.
+const nextConfig: NextConfig = {};
 
 export default nextConfig;

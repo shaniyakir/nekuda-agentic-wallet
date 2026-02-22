@@ -9,16 +9,19 @@
  *
  * Also handles the ?auth=success redirect from magic link verification
  * by auto-refreshing the session.
+ *
+ * Wrapped in <Suspense> because useSearchParams() opts out of static
+ * rendering — required by Next.js 14+ production builds.
  */
 
-import { useEffect } from "react";
+import { Suspense, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { useUser } from "@/components/providers/user-provider";
 import { MagicLinkForm } from "@/components/wallet/magic-link-form";
 import { WalletManager } from "@/components/wallet/wallet-manager";
 import { Loader2, Wallet } from "lucide-react";
 
-export default function WalletPage() {
+function WalletPageContent() {
   const { userId, isLoading, refresh } = useUser();
   const searchParams = useSearchParams();
 
@@ -55,5 +58,19 @@ export default function WalletPage() {
         {userId ? <WalletManager /> : <MagicLinkForm />}
       </div>
     </div>
+  );
+}
+
+export default function WalletPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center">
+          <Loader2 className="size-8 animate-spin text-muted-foreground" />
+        </div>
+      }
+    >
+      <WalletPageContent />
+    </Suspense>
   );
 }

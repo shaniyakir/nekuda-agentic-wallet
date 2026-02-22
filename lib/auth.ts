@@ -6,14 +6,16 @@
  *   2. User clicks link → GET /api/auth/verify?token=x → session set, redirect to /wallet
  *   3. All subsequent requests read userId (email) from encrypted cookie
  *
- * The email IS the userId — passed to Nekuda's WalletProvider, agent tools,
- * and merchant cart. Consistent identity across sessions and devices.
  *
  * In dev mode (no RESEND_API_KEY), the magic link is logged to the console
  * for easy testing without an email service.
+ *
+ * Token design: HMAC-SHA256 signed, stateless — works across Vercel serverless
+ * instances without shared state. Format: base64url(email).expHex.hmacHex
+ * Trade-off: tokens are NOT single-use (acceptable for 10-min demo TTL).
  */
 
-import { randomUUID } from "crypto";
+import { createHmac, timingSafeEqual } from "crypto";
 import { getIronSession, type SessionOptions } from "iron-session";
 import { cookies } from "next/headers";
 import { createLogger } from "@/lib/logger";
@@ -96,69 +98,79 @@ export async function destroySession(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Magic Link Token Store
+// Magic Link Token — HMAC-signed stateless (serverless-safe)
 // ---------------------------------------------------------------------------
-
-interface MagicLinkToken {
-  email: string;
-  expiresAt: number;
-}
-
-/** In-memory token store. Tokens are single-use with a 10-minute TTL. */
-const tokenStore = new Map<string, MagicLinkToken>();
 
 /** TTL for magic link tokens (10 minutes) */
 const TOKEN_TTL_MS = 10 * 60 * 1000;
 
+function getTokenSecret(): string {
+  return process.env.SESSION_SECRET ?? "";
+}
+
 /**
- * Generate a magic link token for the given email.
- * Returns the token string. Previous tokens for the same email are NOT
- * invalidated (the user might request multiple links).
+ * Sign a payload with HMAC-SHA256 using SESSION_SECRET.
+ * Returns hex-encoded digest.
+ */
+function sign(payload: string): string {
+  return createHmac("sha256", getTokenSecret()).update(payload).digest("hex");
+}
+
+/**
+ * Generate a stateless, HMAC-signed magic link token.
+ *
+ * Format: base64url(email) + "." + expiresAt_hex + "." + hmac_hex
+ *
+ * Works across serverless instances — no shared state required.
+ * Tokens are time-limited (10 min) but NOT single-use.
  */
 export function generateMagicToken(email: string): string {
-  // Lazy prune expired tokens on every generation
-  pruneExpiredTokens();
+  const normalized = email.toLowerCase().trim();
+  const expiresAt = Date.now() + TOKEN_TTL_MS;
+  const emailB64 = Buffer.from(normalized).toString("base64url");
+  const expHex = expiresAt.toString(16);
+  const payload = `${emailB64}.${expHex}`;
+  const sig = sign(payload);
 
-  const token = randomUUID();
-  tokenStore.set(token, {
-    email: email.toLowerCase().trim(),
-    expiresAt: Date.now() + TOKEN_TTL_MS,
-  });
-
-  log.info("Magic link token generated", { email });
-  return token;
+  log.info("Magic link token generated", { email: normalized });
+  return `${payload}.${sig}`;
 }
 
 /**
- * Verify and consume a magic link token.
- * Returns the email if valid, null if expired/invalid.
- * Token is single-use — deleted after verification.
+ * Verify an HMAC-signed magic link token.
+ * Returns the email if valid, null if signature invalid or expired.
  */
 export function verifyMagicToken(token: string): string | null {
-  const entry = tokenStore.get(token);
-  if (!entry) {
-    log.warn("Magic link token not found or already used");
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    log.warn("Magic link token malformed");
     return null;
   }
 
-  // Always delete (single-use)
-  tokenStore.delete(token);
+  const [emailB64, expHex, providedSig] = parts;
+  const payload = `${emailB64}.${expHex}`;
+  const expectedSig = sign(payload);
 
-  if (Date.now() > entry.expiresAt) {
-    log.warn("Magic link token expired", { email: entry.email });
-    return null;
-  }
-
-  log.info("Magic link token verified", { email: entry.email });
-  return entry.email;
-}
-
-/** Remove expired tokens to prevent memory leaks. */
-function pruneExpiredTokens(): void {
-  const now = Date.now();
-  for (const [token, entry] of tokenStore) {
-    if (now > entry.expiresAt) {
-      tokenStore.delete(token);
+  // Constant-time comparison to prevent timing attacks
+  try {
+    const a = Buffer.from(providedSig, "hex");
+    const b = Buffer.from(expectedSig, "hex");
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      log.warn("Magic link token signature invalid");
+      return null;
     }
+  } catch {
+    log.warn("Magic link token signature comparison failed");
+    return null;
   }
+
+  const expiresAt = parseInt(expHex, 16);
+  if (Date.now() > expiresAt) {
+    log.warn("Magic link token expired");
+    return null;
+  }
+
+  const email = Buffer.from(emailB64, "base64url").toString("utf-8");
+  log.info("Magic link token verified", { email });
+  return email;
 }
