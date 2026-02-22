@@ -5,7 +5,8 @@ vi.mock("@/lib/nekuda", () => ({
   nekuda: { user: () => ({}) },
 }));
 vi.mock("@/lib/stripe", () => ({
-  stripe: { paymentMethods: { create: vi.fn() }, paymentIntents: { create: vi.fn() } },
+  stripe: { paymentIntents: { create: vi.fn() } },
+  createTokenizedPaymentMethod: vi.fn(),
 }));
 
 import { createToolSet, browseProducts } from "@/lib/agent/tools";
@@ -13,8 +14,7 @@ import {
   getOrCreateSession,
   getSession,
   deleteSession,
-  storeCredentials,
-  getCredentials,
+  storePaymentMethodId,
 } from "@/lib/agent/session-store";
 
 const toolOpts = { toolCallId: "test", messages: [] as never[], abortSignal: undefined as never };
@@ -172,7 +172,7 @@ describe("merchant tools", () => {
   });
 
   describe("executePayment — vault integration (no Stripe)", () => {
-    it("returns error when no credentials in vault", async () => {
+    it("returns error when no PM ID in vault", async () => {
       const cart = await exec(tools.createCart, {}, toolOpts);
       await exec(tools.addToCart,
         { cartId: cart.cartId, productId: "prod_001", quantity: 1 },
@@ -188,19 +188,11 @@ describe("merchant tools", () => {
         toolOpts
       );
       expect(result).toHaveProperty("error");
-      expect(result.error).toContain("No card credentials found");
+      expect(result.error).toContain("No payment method found");
     });
 
     it("returns error for non-existent checkout", async () => {
-      storeCredentials(sid, {
-        cardNumber: "4111111111111111",
-        cardExpiry: "12/26",
-        cvv: "123",
-        cardholderName: "Test",
-        isVisaPayment: false,
-        billingAddress: null,
-        zipCode: null,
-      });
+      storePaymentMethodId(sid, "pm_test");
 
       const result = await exec(tools.executePayment,
         { checkoutId: "nonexistent" },
@@ -228,7 +220,7 @@ describe("system prompt", () => {
   it("mentions AI isolation / security vault", async () => {
     const { SYSTEM_PROMPT } = await import("@/lib/agent/system-prompt");
     expect(SYSTEM_PROMPT).toContain("NEVER have access to full card numbers");
-    expect(SYSTEM_PROMPT).toContain("secure server-side vault");
+    expect(SYSTEM_PROMPT).toContain("secure vault");
   });
 
   it("does not mention revealCardDetails as a separate tool", async () => {

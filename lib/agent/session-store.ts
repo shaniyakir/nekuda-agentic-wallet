@@ -4,9 +4,9 @@
  * Tracks agent state per session so the dashboard can poll for live updates.
  * Each tool call updates the relevant fields; the chat API reads/writes here.
  *
- * SECURITY: Card credentials are stored in a separate private vault (credentialVault).
+ * SECURITY: Only Stripe PaymentMethod IDs are stored (never raw PAN/CVV).
+ * Raw card data is tokenized immediately during reveal and discarded.
  * The vault is never exposed to the LLM, dashboard, or Langfuse traces.
- * Only executePayment reads from it — credentials stay server-side at all times.
  *
  * TTL eviction policy (lazy — checked on every get/set):
  *   - Completed sessions: evicted 30 min after completedAt
@@ -15,7 +15,7 @@
  * Production upgrade: Replace with Redis for multi-instance deployments.
  */
 
-import type { AgentSessionState, PaymentCredentials } from "@/lib/types";
+import type { AgentSessionState } from "@/lib/types";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger("SESSION");
@@ -31,41 +31,39 @@ const COMPLETED_TTL_MS = 30 * 60 * 1000;
 const ABANDONED_TTL_MS = 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
-// Credential Vault — PAN/CVV isolation (never exposed to LLM or dashboard)
+// Payment Method Vault — stores only Stripe PaymentMethod IDs, never raw PAN
 // ---------------------------------------------------------------------------
 
-interface StoredCredentials extends PaymentCredentials {
-  isVisaPayment: boolean;
-  billingAddress: string | null;
-  zipCode: string | null;
-}
-
-const credentialVault = new Map<string, StoredCredentials>();
+/**
+ * Vault maps sessionId → Stripe PaymentMethod ID.
+ * Raw card data is tokenized immediately during reveal and never stored.
+ */
+const paymentMethodVault = new Map<string, string>();
 
 /**
- * Store revealed card credentials server-side. Never returned to the LLM.
+ * Store a Stripe PaymentMethod ID after tokenizing revealed card details.
  */
-export function storeCredentials(
+export function storePaymentMethodId(
   sessionId: string,
-  credentials: StoredCredentials
+  paymentMethodId: string
 ): void {
-  credentialVault.set(sessionId, credentials);
-  log.info("Credentials stored in vault", { sessionId });
+  paymentMethodVault.set(sessionId, paymentMethodId);
+  log.info("PaymentMethod ID stored in vault", { sessionId, paymentMethodId });
 }
 
 /**
- * Retrieve stored credentials for payment processing. Returns null if not found.
+ * Retrieve stored PaymentMethod ID for payment processing.
  */
-export function getCredentials(sessionId: string): StoredCredentials | null {
-  return credentialVault.get(sessionId) ?? null;
+export function getPaymentMethodId(sessionId: string): string | null {
+  return paymentMethodVault.get(sessionId) ?? null;
 }
 
 /**
- * Clear credentials after payment or on session eviction.
+ * Clear PaymentMethod ID after payment or on session eviction.
  */
-export function clearCredentials(sessionId: string): void {
-  if (credentialVault.delete(sessionId)) {
-    log.info("Credentials cleared from vault", { sessionId });
+export function clearPaymentMethodId(sessionId: string): void {
+  if (paymentMethodVault.delete(sessionId)) {
+    log.info("PaymentMethod ID cleared from vault", { sessionId });
   }
 }
 
@@ -185,7 +183,7 @@ export function updateSession(
  */
 export function deleteSession(sessionId: string): boolean {
   const deleted = store.delete(sessionId);
-  credentialVault.delete(sessionId);
+  paymentMethodVault.delete(sessionId);
   if (deleted) {
     log.info("Session deleted", { sessionId });
   }
@@ -222,7 +220,7 @@ function evictExpired(): void {
 
     if (shouldEvict) {
       store.delete(sessionId);
-      credentialVault.delete(sessionId);
+      paymentMethodVault.delete(sessionId);
       evictedCount++;
     }
   }

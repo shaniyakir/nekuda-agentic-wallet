@@ -22,10 +22,11 @@ A single Next.js monolith providing frontend, API, and agent — deployed as one
 | Language | TypeScript (strict) | End-to-end type safety via Zod schemas |
 | Wallet Frontend | `@nekuda/wallet` | Card collection & tokenization (React) |
 | Wallet Backend | `@nekuda/nekuda-js` | Mandate creation, reveal tokens, JIT card credentials |
-| Agent Engine | Vercel AI SDK (`ai`, `@ai-sdk/openai`) | Tool-calling agent loop, streaming responses |
+| Agent Engine | Vercel AI SDK (`ai`, `@ai-sdk/openai`, `@ai-sdk/react`) | Tool-calling agent loop, streaming, `useChat()` |
 | Payments | Stripe (Test Mode) | Real-world settlement simulation |
 | Validation | Zod | Shared schemas for API, agent tools, and UI |
-| Observability | Langfuse | Tracing, prompt management |
+| Auth | `iron-session` + `resend` | Magic link email auth, encrypted httpOnly cookies |
+| Observability | Langfuse (via `@langfuse/otel` + OpenTelemetry) | Tracing tool calls, LLM completions, token usage |
 | UI Components | shadcn/ui + Tailwind CSS + Lucide | Modern, accessible interface |
 
 ---
@@ -38,37 +39,57 @@ A single Next.js monolith providing frontend, API, and agent — deployed as one
 4. **Checkout:** The agent freezes the cart. Prices are refreshed from the product repository (Price Integrity Validation).
 5. **Staged Authorization (3-step Nekuda flow):**
    - `createMandate` — Request spending approval for the cart total.
-   - `requestCardRevealToken` — Obtain a short-lived token after mandate approval.
-   - `revealCardDetails` — Fetch JIT card credentials (Dynamic CVV, 60-min TTL).
-6. **Settlement:** The agent submits credentials to the `/pay` endpoint, which processes payment via Stripe using the **server-calculated** amount (never trusting the agent).
-7. **Confirmation:** Cart transitions to `paid`, stock is decremented, and the user receives order confirmation via streaming chat.
+   - `requestCardRevealToken` — Obtain reveal token, reveal card details ephemerally, **immediately tokenize via Stripe** (POST /v1/tokens → PaymentMethod `pm_xxx`). Raw card data is discarded — only the PM ID is stored in a lightweight `paymentMethodVault`.
+   - `executePayment` — Read pre-created PaymentMethod ID from vault, create PaymentIntent with idempotency key. Clear PM ID after payment.
+6. **Settlement:** Stripe processes payment using server-calculated amount (never trusting the agent). Cart transitions to `paid`.
+7. **Cleanup:** PaymentMethod ID cleared from vault. Session marked as completed with 30-min TTL eviction.
 
 ---
 
 ## 4. Key Pages
 
-| Route | Purpose |
-|-------|---------|
-| `/wallet` | Nekuda wallet setup — card collection via `@nekuda/wallet` SDK |
-| `/chat` | Conversational agent interface — `useChat()` with streaming |
-| `/dashboard` | Real-time state monitor — cart, mandate, reveal, Stripe status |
+| Route | Purpose | Key Components |
+|-------|---------|----------------|
+| `/` | Landing page | Hero, feature cards linking to each section |
+| `/wallet` | Nekuda wallet setup | `MagicLinkForm`, `WalletManager`, `NekudaCvvCollector` |
+| `/chat` | AI shopping assistant | `ChatInterface` with `useChat()`, `ToolCallDisplay` |
+| `/dashboard` | Real-time agent state monitor | `CartPanel`, `NekudaPanel`, `StripePanel`, error display |
 
 ---
 
-## 5. Engineering Principles
+## 5. Component Architecture
 
-- **Zero-Exposure:** Credentials exist only during the settlement phase and are never stored by the agent. Post-settlement cleanup clears mandate, token, and credential state.
-- **Price Integrity:** The merchant API is the source of truth. Prices are recalculated from the product repository at checkout and payment — the agent's price is never trusted.
-- **Repository Pattern:** In-memory data stores (`ProductRepo`, `CartRepo`) abstracted for future scaling to external databases.
-- **Direct Tool Invocation:** Agent tools call repositories directly (same Node.js process) — zero HTTP overhead, full type safety. API routes exist in parallel for external access.
-- **Error Resilience:** All agent tools return error strings instead of throwing, allowing the LLM to reason about failures and retry or inform the user.
-- **Observability:** Langfuse integration for tracing agent decisions, tool calls, and prompt management.
+```
+UserProvider (root layout — session context)
+  └── ChatProvider (singleton Chat instance, persists across navigations)
+       └── Navbar (active-route highlighting, user identity)
+            └── <page>
+```
+
+**Chat persistence:** The `Chat` instance from `@ai-sdk/react` is held in a React context at the root layout level. This ensures conversations (and cart state) survive page navigations.
+
+**Dashboard polling:** The `StateMonitor` polls `GET /api/agent/state/{sessionId}` every 3 seconds. The `sessionId` is derived from the shared `ChatProvider` context, keeping it in sync with the chat.
 
 ---
 
-## 6. Security Model
+## 6. Security Model (AI Isolation)
 
-- Server-side only: `NEKUDA_API_KEY`, `STRIPE_SECRET_KEY`, `OPENAI_API_KEY` — never exposed to the browser.
-- Client-side only: `NEXT_PUBLIC_NEKUDA_PUBLIC_KEY` — used exclusively by the wallet widget.
-- Dynamic CVV with 60-minute TTL per Nekuda security specs.
-- Stripe PaymentIntent uses `automatic_payment_methods` with `allow_redirects: "never"` for agent-compatible flow.
+- **PaymentMethod Vault:** Raw card data (PAN, CVV, expiry) is **never stored**. Card details are revealed ephemerally and immediately tokenized into a Stripe PaymentMethod. Only the `pm_xxx` ID is stored in a server-side `Map` — never returned to the LLM, dashboard, or Langfuse traces.
+- **LLM sees only:** `{ success: true, last4: "XXXX" }` after card reveal.
+- **CVV TTL:** 60-minute window enforced by Nekuda. `executePayment` enforces a 55-minute safety margin.
+- **Server-side secrets:** `NEKUDA_API_KEY`, `STRIPE_SECRET_KEY`, `OPENAI_API_KEY` — never exposed to browser.
+- **Client-side only:** `NEXT_PUBLIC_NEKUDA_PUBLIC_KEY` — used exclusively by wallet widget.
+- **Auth:** Magic link via `iron-session` encrypted httpOnly cookies. No passwords stored.
+- **Rate limiting:** Sliding-window per-userId limiter on the agent chat endpoint.
+
+---
+
+## 7. Engineering Principles
+
+- **Zero-Exposure:** Raw card data exists only as ephemeral local variables during tokenization — never persisted. Only Stripe PaymentMethod IDs are stored temporarily and cleared post-payment.
+- **Price Integrity:** Prices recalculated from product repository at both checkout and payment — the agent's price is never trusted.
+- **Repository Pattern:** In-memory stores (`ProductRepo`, `CartRepo`) abstracted behind async interfaces for future database migration.
+- **Direct Tool Invocation:** Agent tools call repositories directly (same process, no HTTP overhead).
+- **Error Resilience:** All agent tools return error objects instead of throwing, enabling LLM-driven error recovery.
+- **Session TTL:** Completed sessions evicted after 30 min, abandoned after 60 min (lazy eviction on access).
+- **Idempotent Payments:** Stripe PaymentIntent uses `idempotencyKey: pay_{checkoutId}` to prevent double charges. No separate pay HTTP endpoint — settlement is handled within the agent's `executePayment` tool.

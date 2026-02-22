@@ -17,22 +17,32 @@ const transport = new DefaultChatTransport({
   api: "/api/agent/chat",
 });
 
-const ChatContext = createContext<Chat<UIMessage> | null>(null);
+interface ChatContextValue {
+  chat: Chat<UIMessage> | null;
+  chatId: string | null;
+}
+
+const ChatContext = createContext<ChatContextValue>({ chat: null, chatId: null });
 
 export function ChatProvider({ children }: { children: ReactNode }) {
   const { userId } = useUser();
 
-  const chat = useMemo(() => {
-    if (!userId) return null;
-    return new Chat<UIMessage>({
-      id: `agent_${userId}`,
-      transport,
-    });
+  const value = useMemo<ChatContextValue>(() => {
+    if (!userId) return { chat: null, chatId: null };
+    const id = `agent_${userId}`;
+    return {
+      chat: new Chat<UIMessage>({ id, transport }),
+      chatId: id,
+    };
   }, [userId]);
 
-  return <ChatContext.Provider value={chat}>{children}</ChatContext.Provider>;
+  return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }
 
 export function useChatInstance(): Chat<UIMessage> | null {
-  return useContext(ChatContext);
+  return useContext(ChatContext).chat;
+}
+
+export function useChatId(): string | null {
+  return useContext(ChatContext).chatId;
 }

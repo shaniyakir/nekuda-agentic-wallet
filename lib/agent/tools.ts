@@ -5,9 +5,11 @@
  * Nekuda tools call @nekuda/nekuda-js for staged authorization.
  *
  * SECURITY (AI Isolation per Nekuda best practices):
- * - Card credentials (PAN, CVV, expiry) are NEVER returned to the LLM.
- * - revealCardDetails is merged into requestCardRevealToken; credentials
- *   are stored in a server-side vault and read by executePayment directly.
+ * - Raw card data (PAN, CVV, expiry) is NEVER stored or returned to the LLM.
+ * - requestCardRevealToken reveals card details into ephemeral local variables,
+ *   immediately tokenizes them via Stripe (POST /v1/tokens → PaymentMethod),
+ *   and stores only the pm_xxx ID in a lightweight paymentMethodVault.
+ * - executePayment reads the pre-created PM ID — no raw card data anywhere.
  * - The LLM only sees { success: true, last4: "XXXX" } after reveal.
  *
  * Every tool returns a result string/object (never throws), so the LLM
@@ -19,14 +21,14 @@ import { tool } from "ai";
 import { productRepo } from "@/lib/merchant/product-repo";
 import { cartRepo } from "@/lib/merchant/cart-repo";
 import { nekuda } from "@/lib/nekuda";
-import { stripe } from "@/lib/stripe";
+import { stripe, createTokenizedPaymentMethod } from "@/lib/stripe";
 import { MandateData, NekudaApiError } from "@nekuda/nekuda-js";
 import {
   updateSession,
   getSession,
-  storeCredentials,
-  getCredentials,
-  clearCredentials,
+  storePaymentMethodId,
+  getPaymentMethodId,
+  clearPaymentMethodId,
 } from "@/lib/agent/session-store";
 import { createLogger } from "@/lib/logger";
 
@@ -212,7 +214,7 @@ export function createToolSet(meta: ToolMeta) {
 
     requestCardRevealToken: tool({
       description:
-        "Step 2 of payment: Request a reveal token and immediately reveal card details. Credentials are stored securely server-side — you will only see the last 4 digits. Requires a mandateId from createMandate.",
+        "Step 2 of payment: Request a reveal token, reveal card details, and tokenize them into a Stripe PaymentMethod. Raw card data is never stored — only the tokenized PM ID is kept server-side. You will only see the last 4 digits. Requires a mandateId from createMandate.",
       inputSchema: z.object({
         mandateId: z
           .union([z.string(), z.number()])
@@ -227,35 +229,39 @@ export function createToolSet(meta: ToolMeta) {
           updateSession(sessionId, { revealTokenObtained: true });
           log.info("Reveal token obtained", { mandateId, userId });
 
-          // Step 2b: Immediately reveal card details and store in vault
+          // Step 2b: Reveal card details (ephemeral — never stored)
           const card = await user.revealCardDetails(tokenResult.revealToken);
-          const now = new Date().toISOString();
 
-          storeCredentials(sessionId, {
-            cardNumber: card.cardNumber ?? "",
-            cardExpiry: card.cardExpiryDate ?? "",
-            cvv: card.cardCvv ?? "",
-            cardholderName: card.cardholderName ?? "",
-            isVisaPayment: card.isVisaPayment ?? false,
-            billingAddress: card.billingAddress ?? null,
-            zipCode: card.zipCode ?? null,
+          // Step 2c: Immediately tokenize via Stripe publishable key
+          const [expMonth, expYear] = (card.cardExpiryDate ?? "01/28")
+            .split("/")
+            .map(Number);
+          const paymentMethod = await createTokenizedPaymentMethod({
+            number: card.cardNumber ?? "",
+            expMonth: expMonth ?? 1,
+            expYear: 2000 + (expYear ?? 28),
+            cvc: card.cardCvv ?? "",
           });
 
+          // Store only the Stripe PaymentMethod ID — raw card data is discarded
+          storePaymentMethodId(sessionId, paymentMethod.id);
+
+          const now = new Date().toISOString();
           updateSession(sessionId, {
             credentialsRevealed: true,
             credentialsRevealedAt: now,
           });
 
-          log.info("Card details revealed and stored in vault", {
+          log.info("Card revealed, tokenized, and PM stored", {
             userId,
             last4: card.last4Digits ?? "N/A",
-            hasCvv: !!card.cardCvv,
+            paymentMethodId: paymentMethod.id,
           });
 
           return {
             success: true,
             last4: card.last4Digits ?? null,
-            message: "Card credentials secured. Ready for payment.",
+            message: "Card tokenized and secured. Ready for payment.",
           };
         } catch (err) {
           if (err instanceof NekudaApiError && isCvvExpiredError(err)) {
@@ -279,7 +285,7 @@ export function createToolSet(meta: ToolMeta) {
 
     executePayment: tool({
       description:
-        "Final step: Process payment via Stripe. Card credentials are read securely from the server-side vault — you do NOT need to provide them. Only provide the checkoutId.",
+        "Final step: Process payment via Stripe using the pre-tokenized PaymentMethod ID from the server-side vault. No card details needed — only provide the checkoutId.",
       inputSchema: z.object({
         checkoutId: z.string().describe("Checkout ID from checkoutCart"),
       }),
@@ -290,7 +296,7 @@ export function createToolSet(meta: ToolMeta) {
           const elapsed = Date.now() - new Date(session.credentialsRevealedAt).getTime();
           if (elapsed > CREDENTIAL_TTL_MS) {
             log.warn("Credential TTL exceeded", { sessionId, elapsedMin: Math.round(elapsed / 60000) });
-            clearCredentials(sessionId);
+            clearPaymentMethodId(sessionId);
             return {
               error: "CREDENTIALS_EXPIRED",
               message: "Credentials expired (CVV TTL exceeded). Call requestCardRevealToken again before retrying.",
@@ -298,10 +304,10 @@ export function createToolSet(meta: ToolMeta) {
           }
         }
 
-        // 2. Read credentials from server-side vault
-        const credentials = getCredentials(sessionId);
-        if (!credentials) {
-          return { error: "No card credentials found. Call requestCardRevealToken first." };
+        // 2. Read PaymentMethod ID from vault (raw card data was never stored)
+        const paymentMethodId = getPaymentMethodId(sessionId);
+        if (!paymentMethodId) {
+          return { error: "No payment method found. Call requestCardRevealToken first." };
         }
 
         // 3. Look up cart + price integrity
@@ -317,28 +323,13 @@ export function createToolSet(meta: ToolMeta) {
         }
         serverTotal = Math.round(serverTotal * 100) / 100;
 
-        // 4. Parse expiry
-        const [expMonth, expYear] = credentials.cardExpiry.split("/").map(Number);
-        if (!expMonth || !expYear) return { error: "Invalid card expiry format in stored credentials" };
-
         try {
-          // 5. Create Stripe PaymentMethod
-          const paymentMethod = await stripe.paymentMethods.create({
-            type: "card",
-            card: {
-              number: credentials.cardNumber,
-              exp_month: expMonth,
-              exp_year: 2000 + expYear,
-              cvc: credentials.cvv,
-            },
-          });
-
-          // 6. Create + confirm PaymentIntent with idempotency
+          // 4. Create + confirm PaymentIntent with the pre-tokenized PM
           const paymentIntent = await stripe.paymentIntents.create(
             {
               amount: Math.round(serverTotal * 100),
               currency: "usd",
-              payment_method: paymentMethod.id,
+              payment_method: paymentMethodId,
               confirm: true,
               automatic_payment_methods: { enabled: true, allow_redirects: "never" },
               metadata: { checkoutId, cartId: cart.id, userId },
@@ -346,9 +337,9 @@ export function createToolSet(meta: ToolMeta) {
             { idempotencyKey: `pay_${checkoutId}` }
           );
 
-          // 7. Mark cart as paid + clear credentials from vault
+          // 5. Mark cart as paid + clear PM from vault
           cartRepo.markPaid(checkoutId);
-          clearCredentials(sessionId);
+          clearPaymentMethodId(sessionId);
 
           updateSession(sessionId, {
             orderId: cart.id,

@@ -49,27 +49,6 @@ export const CartSchema = z.object({
 export type Cart = z.infer<typeof CartSchema>;
 
 // ---------------------------------------------------------------------------
-// Payment Credentials (from Nekuda reveal)
-// ---------------------------------------------------------------------------
-
-export const PaymentCredentialsSchema = z.object({
-  /** Full card number from Nekuda reveal */
-  cardNumber: z.string(),
-  /** Expiry in MM/YY format — mapped from SDK's card_exp */
-  cardExpiry: z.string(),
-  /**
-   * Dynamic CVV — Valid for 60 minutes per Nekuda security specs.
-   * Must be used within TTL window or a new reveal is required.
-   * Mapped from SDK's card_cvv.
-   */
-  cvv: z.string(),
-  /** Cardholder name — mapped from SDK's card_holder */
-  cardholderName: z.string(),
-});
-
-export type PaymentCredentials = z.infer<typeof PaymentCredentialsSchema>;
-
-// ---------------------------------------------------------------------------
 // Order / Payment Response
 // ---------------------------------------------------------------------------
 
@@ -94,13 +73,6 @@ export const CreateCartRequestSchema = z.object({
 export const AddToCartRequestSchema = z.object({
   productId: z.string().min(1, "productId is required"),
   quantity: z.number().int().positive().default(1),
-});
-
-export const PayRequestSchema = z.object({
-  checkoutId: z.string().min(1, "checkoutId is required"),
-  credentials: PaymentCredentialsSchema,
-  /** Optional: mandate amount for price-drift logging (observability only) */
-  mandateAmount: z.number().positive().optional(),
 });
 
 // ---------------------------------------------------------------------------

@@ -6,9 +6,9 @@ import {
   deleteSession,
   listSessions,
   getStoreSize,
-  storeCredentials,
-  getCredentials,
-  clearCredentials,
+  storePaymentMethodId,
+  getPaymentMethodId,
+  clearPaymentMethodId,
 } from "@/lib/agent/session-store";
 
 describe("session-store", () => {
@@ -77,54 +77,39 @@ describe("session-store", () => {
   });
 });
 
-describe("credential-vault", () => {
+describe("payment-method-vault", () => {
   const sid = `vault-${Date.now()}`;
 
-  const mockCreds = {
-    cardNumber: "4111111111111111",
-    cardExpiry: "12/26",
-    cvv: "123",
-    cardholderName: "Test User",
-    isVisaPayment: true,
-    billingAddress: "123 Main St",
-    zipCode: "10001",
-  };
-
-  it("stores and retrieves credentials", () => {
-    storeCredentials(sid, mockCreds);
-    const creds = getCredentials(sid);
-    expect(creds).not.toBeNull();
-    expect(creds?.cardNumber).toBe("4111111111111111");
-    expect(creds?.cvv).toBe("123");
-    expect(creds?.isVisaPayment).toBe(true);
-    clearCredentials(sid);
+  it("stores and retrieves PaymentMethod ID", () => {
+    storePaymentMethodId(sid, "pm_test_123");
+    expect(getPaymentMethodId(sid)).toBe("pm_test_123");
+    clearPaymentMethodId(sid);
   });
 
-  it("returns null for non-existent credentials", () => {
-    expect(getCredentials("nonexistent")).toBeNull();
+  it("returns null for non-existent PM ID", () => {
+    expect(getPaymentMethodId("nonexistent")).toBeNull();
   });
 
-  it("clears credentials", () => {
-    storeCredentials(sid, mockCreds);
-    expect(getCredentials(sid)).not.toBeNull();
-    clearCredentials(sid);
-    expect(getCredentials(sid)).toBeNull();
+  it("clears PM ID", () => {
+    storePaymentMethodId(sid, "pm_clear");
+    expect(getPaymentMethodId(sid)).not.toBeNull();
+    clearPaymentMethodId(sid);
+    expect(getPaymentMethodId(sid)).toBeNull();
   });
 
-  it("credentials are cleaned up when session is deleted", () => {
+  it("PM ID is cleaned up when session is deleted", () => {
     const deleteSid = `vault-delete-${Date.now()}`;
     getOrCreateSession(deleteSid, "user@test.com");
-    storeCredentials(deleteSid, mockCreds);
-    expect(getCredentials(deleteSid)).not.toBeNull();
+    storePaymentMethodId(deleteSid, "pm_delete");
+    expect(getPaymentMethodId(deleteSid)).not.toBeNull();
     deleteSession(deleteSid);
-    expect(getCredentials(deleteSid)).toBeNull();
+    expect(getPaymentMethodId(deleteSid)).toBeNull();
   });
 
-  it("overwrites credentials on re-store (credential refresh)", () => {
-    storeCredentials(sid, mockCreds);
-    storeCredentials(sid, { ...mockCreds, cvv: "999" });
-    const creds = getCredentials(sid);
-    expect(creds?.cvv).toBe("999");
-    clearCredentials(sid);
+  it("overwrites PM ID on re-store (credential refresh)", () => {
+    storePaymentMethodId(sid, "pm_old");
+    storePaymentMethodId(sid, "pm_new");
+    expect(getPaymentMethodId(sid)).toBe("pm_new");
+    clearPaymentMethodId(sid);
   });
 });
