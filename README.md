@@ -174,6 +174,7 @@ cp .env.example .env.local
 | `LANGFUSE_SECRET_KEY` | ✅ | Langfuse secret key |
 | `LANGFUSE_PUBLIC_KEY` | ✅ | Langfuse public key |
 | `RESEND_API_KEY` | optional | Email for magic links (console fallback if absent) |
+| `NEXT_PUBLIC_DEMO_MODE` | optional | Set to `"true"` to show magic link directly in UI (no email needed) |
 | `NEXT_PUBLIC_APP_URL` | optional | Base URL for magic links (auto-detected from request) |
 | `NEKUDA_BASE_URL` | optional | Nekuda base URL override (sandbox) |
 
@@ -190,6 +191,8 @@ npm run dev
 ```
 
 **Dev tip (no Resend key):** After entering your email in `/wallet`, the magic link is printed to the terminal. Copy and paste it into your browser.
+
+**Demo deployment:** Set `NEXT_PUBLIC_DEMO_MODE=true` in your Vercel environment variables. The magic link will appear as a "Sign in now" button directly in the UI — no email delivery required. This is useful for live demos and interviewer access without configuring a custom email domain.
 
 ### Run Tests
 

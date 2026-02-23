@@ -105,7 +105,11 @@ export async function destroySession(): Promise<void> {
 const TOKEN_TTL_MS = 10 * 60 * 1000;
 
 function getTokenSecret(): string {
-  return process.env.SESSION_SECRET ?? "";
+  const secret = process.env.SESSION_SECRET;
+  if (!secret) {
+    throw new Error("SESSION_SECRET env var is required for token signing");
+  }
+  return secret;
 }
 
 /**

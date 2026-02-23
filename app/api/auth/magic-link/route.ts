@@ -68,9 +68,11 @@ export async function POST(request: NextRequest) {
     log.info(`🔗 MAGIC LINK (dev mode): ${magicLink}`);
   }
 
+  const isDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+
   return NextResponse.json({
     message: "If that email exists in our system, a sign-in link has been sent.",
-    // In dev mode, return the link for convenience (never in production)
-    ...(process.env.NODE_ENV !== "production" && { magicLink }),
+    // Return the link in dev or demo mode for easy testing without email delivery
+    ...((process.env.NODE_ENV !== "production" || isDemoMode) && { magicLink }),
   });
 }

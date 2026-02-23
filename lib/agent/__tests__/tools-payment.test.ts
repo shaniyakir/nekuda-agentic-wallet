@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { NekudaApiError } from "@nekuda/nekuda-js";
+import {
+  NekudaApiError,
+  CardNotFoundError,
+  AuthenticationError,
+  NekudaConnectionError,
+  NekudaValidationError,
+} from "@nekuda/nekuda-js";
 
 // ---------------------------------------------------------------------------
 // Controllable mocks for Nekuda + Stripe
@@ -67,6 +73,13 @@ describe("createMandate", () => {
   const uid = "mandate@test.com";
   let tools: ReturnType<typeof createToolSet>;
 
+  async function setupCheckedOutCart() {
+    const cart = await exec(tools.createCart, {}, toolOpts);
+    await exec(tools.addToCart, { cartId: cart.cartId, productId: "prod_001", quantity: 1 }, toolOpts);
+    const checkout = await exec(tools.checkoutCart, { cartId: cart.cartId }, toolOpts);
+    return checkout.checkoutId as string;
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     deleteSession(sid);
@@ -74,12 +87,14 @@ describe("createMandate", () => {
     tools = createToolSet({ sessionId: sid, userId: uid });
   });
 
-  it("returns mandateId on success and updates session", async () => {
+  it("returns mandateId on success using server-verified cart total", async () => {
+    const checkoutId = await setupCheckedOutCart();
     mockCreateMandate.mockResolvedValue({ mandateId: 42, requestId: "req_abc" });
 
-    const result = await exec(tools.createMandate, { product: "Headphones", price: 89.99 }, toolOpts);
+    const result = await exec(tools.createMandate, { checkoutId }, toolOpts);
     expect(result.mandateId).toBe(42);
     expect(result.status).toBe("approved");
+    expect(result.amount).toBe("$89.99");
     expect(result.requestId).toBe("req_abc");
 
     const session = getSession(sid);
@@ -87,31 +102,84 @@ describe("createMandate", () => {
     expect(session?.mandateStatus).toBe("approved");
   });
 
+  it("passes server-calculated price to Nekuda (not LLM input)", async () => {
+    const checkoutId = await setupCheckedOutCart();
+    mockCreateMandate.mockResolvedValue({ mandateId: 1, requestId: "r" });
+
+    await exec(tools.createMandate, { checkoutId }, toolOpts);
+
+    const mandateArg = mockCreateMandate.mock.calls[0][0];
+    expect(mandateArg.price).toBe(89.99);
+    expect(mandateArg.product).toContain("Wireless Headphones");
+  });
+
+  it("returns error for non-existent checkout", async () => {
+    const result = await exec(tools.createMandate, { checkoutId: "nonexistent" }, toolOpts);
+    expect(result.error).toContain("Checkout not found");
+  });
+
+  it("returns error for cart that is not checked out", async () => {
+    const cart = await exec(tools.createCart, {}, toolOpts);
+    await exec(tools.addToCart, { cartId: cart.cartId, productId: "prod_001", quantity: 1 }, toolOpts);
+
+    const result = await exec(tools.createMandate, { checkoutId: cart.cartId }, toolOpts);
+    expect(result.error).toContain("active");
+  });
+
+  it("returns NO_PAYMENT_METHOD on CardNotFoundError", async () => {
+    const checkoutId = await setupCheckedOutCart();
+    mockCreateMandate.mockRejectedValue(
+      new CardNotFoundError("Card not found", "card_not_found", 404, "test@test.com")
+    );
+
+    const result = await exec(tools.createMandate, { checkoutId }, toolOpts);
+    expect(result.error).toBe("NO_PAYMENT_METHOD");
+    expect(result.message).toContain("Wallet");
+    expect(result.retryable).toBe(false);
+
+    const session = getSession(sid);
+    expect(session?.mandateStatus).toBe("failed");
+  });
+
+  it("returns NO_PAYMENT_METHOD on generic 400 with 'Unknown error' (SDK parsing gap)", async () => {
+    const checkoutId = await setupCheckedOutCart();
+    mockCreateMandate.mockRejectedValue(
+      new NekudaApiError("Unknown error", "invalid_request", 400)
+    );
+
+    const result = await exec(tools.createMandate, { checkoutId }, toolOpts);
+    expect(result.error).toBe("NO_PAYMENT_METHOD");
+    expect(result.message).toContain("Wallet");
+  });
+
   it("returns retryable error on 429 (rate limited)", async () => {
+    const checkoutId = await setupCheckedOutCart();
     mockCreateMandate.mockRejectedValue(
       new NekudaApiError("Rate limit exceeded", "rate_limited", 429)
     );
 
-    const result = await exec(tools.createMandate, { product: "X", price: 10 }, toolOpts);
+    const result = await exec(tools.createMandate, { checkoutId }, toolOpts);
     expect(result.error).toContain("Rate limit exceeded");
     expect(result.retryable).toBe(true);
   });
 
   it("returns retryable error on 503 (service unavailable)", async () => {
+    const checkoutId = await setupCheckedOutCart();
     mockCreateMandate.mockRejectedValue(
       new NekudaApiError("Service unavailable", "unavailable", 503)
     );
 
-    const result = await exec(tools.createMandate, { product: "X", price: 10 }, toolOpts);
+    const result = await exec(tools.createMandate, { checkoutId }, toolOpts);
     expect(result.retryable).toBe(true);
   });
 
   it("returns non-retryable error on 400 and updates session error", async () => {
+    const checkoutId = await setupCheckedOutCart();
     mockCreateMandate.mockRejectedValue(
       new NekudaApiError("Invalid mandate data", "invalid_request", 400)
     );
 
-    const result = await exec(tools.createMandate, { product: "X", price: 10 }, toolOpts);
+    const result = await exec(tools.createMandate, { checkoutId }, toolOpts);
     expect(result.error).toContain("Invalid mandate data");
     expect(result.retryable).toBe(false);
 
@@ -119,10 +187,50 @@ describe("createMandate", () => {
     expect(session?.error).toContain("Invalid mandate data");
   });
 
+  it("returns non-retryable config error on AuthenticationError", async () => {
+    const checkoutId = await setupCheckedOutCart();
+    mockCreateMandate.mockRejectedValue(
+      new AuthenticationError("Invalid API key", "authentication_error", 401)
+    );
+
+    const result = await exec(tools.createMandate, { checkoutId }, toolOpts);
+    expect(result.error).toContain("configuration error");
+    expect(result.retryable).toBe(false);
+
+    const session = getSession(sid);
+    expect(session?.error).toBe("Payment service authentication failed");
+  });
+
+  it("returns retryable error on NekudaConnectionError", async () => {
+    const checkoutId = await setupCheckedOutCart();
+    mockCreateMandate.mockRejectedValue(
+      new NekudaConnectionError("ECONNREFUSED")
+    );
+
+    const result = await exec(tools.createMandate, { checkoutId }, toolOpts);
+    expect(result.error).toContain("Could not reach the payment service");
+    expect(result.retryable).toBe(true);
+  });
+
+  it("returns non-retryable error on NekudaValidationError", async () => {
+    const checkoutId = await setupCheckedOutCart();
+    mockCreateMandate.mockRejectedValue(
+      new NekudaValidationError("price must be positive")
+    );
+
+    const result = await exec(tools.createMandate, { checkoutId }, toolOpts);
+    expect(result.error).toContain("price must be positive");
+    expect(result.retryable).toBe(false);
+
+    const session = getSession(sid);
+    expect(session?.error).toContain("price must be positive");
+  });
+
   it("handles unexpected non-Nekuda errors", async () => {
+    const checkoutId = await setupCheckedOutCart();
     mockCreateMandate.mockRejectedValue(new Error("Network timeout"));
 
-    const result = await exec(tools.createMandate, { product: "X", price: 10 }, toolOpts);
+    const result = await exec(tools.createMandate, { checkoutId }, toolOpts);
     expect(result.error).toContain("Network timeout");
     expect(result.retryable).toBe(false);
   });
@@ -183,6 +291,58 @@ describe("requestCardRevealToken", () => {
     });
   });
 
+  it("returns INCOMPLETE_CARD_DATA when card number is missing", async () => {
+    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
+    mockRevealCardDetails.mockResolvedValue({
+      ...MOCK_CARD,
+      cardNumber: null,
+    });
+
+    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
+    expect(result.error).toBe("INCOMPLETE_CARD_DATA");
+    expect(result.message).toContain("cardNumber");
+    expect(result.retryable).toBe(true);
+    expect(mockCreateTokenizedPaymentMethod).not.toHaveBeenCalled();
+  });
+
+  it("returns INCOMPLETE_CARD_DATA when CVV is missing", async () => {
+    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
+    mockRevealCardDetails.mockResolvedValue({
+      ...MOCK_CARD,
+      cardCvv: null,
+    });
+
+    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
+    expect(result.error).toBe("INCOMPLETE_CARD_DATA");
+    expect(result.message).toContain("cardCvv");
+    expect(mockCreateTokenizedPaymentMethod).not.toHaveBeenCalled();
+  });
+
+  it("returns INCOMPLETE_CARD_DATA when expiry is missing", async () => {
+    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
+    mockRevealCardDetails.mockResolvedValue({
+      ...MOCK_CARD,
+      cardExpiryDate: null,
+    });
+
+    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
+    expect(result.error).toBe("INCOMPLETE_CARD_DATA");
+    expect(result.message).toContain("cardExpiryDate");
+    expect(mockCreateTokenizedPaymentMethod).not.toHaveBeenCalled();
+  });
+
+  it("returns INVALID_EXPIRY when expiry format is bad", async () => {
+    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
+    mockRevealCardDetails.mockResolvedValue({
+      ...MOCK_CARD,
+      cardExpiryDate: "invalid",
+    });
+
+    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
+    expect(result.error).toBe("INVALID_EXPIRY");
+    expect(mockCreateTokenizedPaymentMethod).not.toHaveBeenCalled();
+  });
+
   it("returns error when tokenization fails", async () => {
     mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
     mockRevealCardDetails.mockResolvedValue(MOCK_CARD);
@@ -241,6 +401,26 @@ describe("requestCardRevealToken", () => {
     const result = await exec(tools.requestCardRevealToken, { mandateId: 999 }, toolOpts);
     expect(result.error).toContain("Mandate not found");
     expect(result.retryable).toBe(false);
+  });
+
+  it("returns config error on AuthenticationError during reveal", async () => {
+    mockRequestCardRevealToken.mockRejectedValue(
+      new AuthenticationError("Unauthorized", "authentication_error", 401)
+    );
+
+    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
+    expect(result.error).toContain("configuration error");
+    expect(result.retryable).toBe(false);
+  });
+
+  it("returns retryable error on NekudaConnectionError during reveal", async () => {
+    mockRequestCardRevealToken.mockRejectedValue(
+      new NekudaConnectionError("ETIMEDOUT")
+    );
+
+    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
+    expect(result.error).toContain("Could not reach the payment service");
+    expect(result.retryable).toBe(true);
   });
 });
 

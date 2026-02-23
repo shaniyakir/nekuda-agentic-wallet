@@ -61,7 +61,7 @@ export function storePaymentMethodId(
   paymentMethodId: string
 ): void {
   paymentMethodVault.set(sessionId, paymentMethodId);
-  log.info("PaymentMethod ID stored in vault", { sessionId, paymentMethodId });
+  log.info("PaymentMethod stored in vault", { sessionId });
 }
 
 /**

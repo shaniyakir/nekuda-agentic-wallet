@@ -60,17 +60,23 @@ export function MagicLinkForm() {
         {state === "sent" ? (
           <div className="flex flex-col items-center gap-4 py-4">
             <CheckCircle2 className="size-12 text-green-500" />
-            <p className="text-center text-sm text-muted-foreground">
-              Check your inbox for a sign-in link. It expires in 10 minutes.
-            </p>
-            {devLink && (
-              <a
-                href={devLink}
-                className="inline-flex items-center gap-2 text-sm text-primary underline underline-offset-4 hover:text-primary/80"
-              >
-                <ExternalLink className="size-3.5" />
-                Dev mode: click here to sign in
-              </a>
+            {devLink ? (
+              <>
+                <p className="text-center text-sm text-muted-foreground">
+                  Click below to sign in instantly.
+                </p>
+                <a
+                  href={devLink}
+                  className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
+                >
+                  <ExternalLink className="size-4" />
+                  Sign in now
+                </a>
+              </>
+            ) : (
+              <p className="text-center text-sm text-muted-foreground">
+                Check your inbox for a sign-in link. It expires in 10 minutes.
+              </p>
             )}
             <Button
               variant="ghost"

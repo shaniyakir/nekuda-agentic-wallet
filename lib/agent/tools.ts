@@ -22,7 +22,14 @@ import { productRepo } from "@/lib/merchant/product-repo";
 import { cartRepo } from "@/lib/merchant/cart-repo";
 import { nekuda } from "@/lib/nekuda";
 import { stripe, createTokenizedPaymentMethod } from "@/lib/stripe";
-import { MandateData, NekudaApiError } from "@nekuda/nekuda-js";
+import {
+  MandateData,
+  NekudaApiError,
+  NekudaConnectionError,
+  NekudaValidationError,
+  AuthenticationError,
+  CardNotFoundError,
+} from "@nekuda/nekuda-js";
 import {
   updateSession,
   getSession,
@@ -61,20 +68,6 @@ export const browseProducts = tool({
       price: `$${p.price.toFixed(2)}`,
       stock: p.stock,
     }));
-  },
-});
-
-// ---------------------------------------------------------------------------
-// 2. createCart
-// ---------------------------------------------------------------------------
-
-// Placeholder — the real createCart is built in createToolSet() with session context.
-export const createCart = tool({
-  description:
-    "Create a new shopping cart for the current user. Must be called before adding items.",
-  inputSchema: z.object({}),
-  execute: async () => {
-    return { error: "Must be called via createToolSet()" };
   },
 });
 
@@ -179,20 +172,32 @@ export function createToolSet(meta: ToolMeta) {
 
     createMandate: tool({
       description:
-        "Step 1 of payment: Create a purchase mandate with Nekuda for the specified amount. This requests spending approval from the user's wallet.",
+        "Step 1 of payment: Create a purchase mandate with Nekuda using the server-verified cart total. Requires a checkoutId from checkoutCart. This requests spending approval from the user's wallet for the exact amount that will be charged.",
       inputSchema: z.object({
-        product: z.string().describe("Product name or order summary"),
-        price: z.number().positive().describe("Total amount in USD"),
-        merchant: z.string().default("ByteShop"),
+        checkoutId: z.string().describe("Checkout ID from checkoutCart"),
       }),
-      execute: async ({ product, price, merchant }) => {
+      execute: async ({ checkoutId }) => {
+        const cart = cartRepo.get(checkoutId);
+        if (!cart) return { error: "Checkout not found. Call checkoutCart first." };
+        if (cart.status !== "checked_out") return { error: `Cart status is '${cart.status}', expected 'checked_out'` };
+
+        let serverTotal = 0;
+        const productNames: string[] = [];
+        for (const item of cart.items) {
+          const product = productRepo.getById(item.productId);
+          if (!product) return { error: `Product ${item.productId} no longer exists` };
+          serverTotal += product.price * item.quantity;
+          productNames.push(`${item.quantity}x ${product.name}`);
+        }
+        serverTotal = Math.round(serverTotal * 100) / 100;
+
         try {
           const user = nekuda.user(userId);
           const mandateData = new MandateData({
-            product,
-            price,
+            product: productNames.join(", "),
+            price: serverTotal,
             currency: "USD",
-            merchant,
+            merchant: "ByteShop",
             mode: "sandbox",
           });
           const result = await user.createMandate(mandateData);
@@ -200,13 +205,23 @@ export function createToolSet(meta: ToolMeta) {
             mandateId: result.mandateId,
             mandateStatus: "approved",
           });
-          log.info("Mandate created", { mandateId: result.mandateId, userId: redactEmail(userId), price });
+          log.info("Mandate created", { mandateId: result.mandateId, userId: redactEmail(userId), price: serverTotal });
           return {
             mandateId: result.mandateId,
             status: "approved",
+            amount: `$${serverTotal.toFixed(2)}`,
             requestId: result.requestId,
           };
         } catch (err) {
+          if (isNoPaymentMethodError(err)) {
+            log.warn("No payment method configured", { userId: redactEmail(userId) });
+            updateSession(sessionId, { mandateStatus: "failed", error: "No payment method configured" });
+            return {
+              error: "NO_PAYMENT_METHOD",
+              message: "No payment method is set up yet. Please visit the Wallet page to add a card before making a purchase.",
+              retryable: false,
+            };
+          }
           return handleNekudaError(err, "createMandate", sessionId);
         }
       },
@@ -253,14 +268,29 @@ export function createToolSet(meta: ToolMeta) {
 
         // Step 2c: Tokenize via Stripe publishable key (Stripe API)
         try {
-          const [expMonth, expYear] = (card.cardExpiryDate ?? "01/28")
-            .split("/")
-            .map(Number);
+          if (!card.cardNumber || !card.cardExpiryDate || !card.cardCvv) {
+            const missing = [
+              !card.cardNumber && "cardNumber",
+              !card.cardExpiryDate && "cardExpiryDate",
+              !card.cardCvv && "cardCvv",
+            ].filter(Boolean).join(", ");
+            log.error("Incomplete card data from Nekuda reveal", { missing, userId: redactEmail(userId) });
+            updateSession(sessionId, { error: "Incomplete card data received" });
+            return { error: "INCOMPLETE_CARD_DATA", message: `Missing: ${missing}`, retryable: true };
+          }
+
+          const [expMonth, expYear] = card.cardExpiryDate.split("/").map(Number);
+          if (!expMonth || !expYear) {
+            log.error("Invalid card expiry format", { userId: redactEmail(userId) });
+            updateSession(sessionId, { error: "Invalid card expiry format" });
+            return { error: "INVALID_EXPIRY", message: "Card expiry format unrecognized", retryable: true };
+          }
+
           const paymentMethod = await createTokenizedPaymentMethod({
-            number: card.cardNumber ?? "",
-            expMonth: expMonth ?? 1,
-            expYear: 2000 + (expYear ?? 28),
-            cvc: card.cardCvv ?? "",
+            number: card.cardNumber,
+            expMonth,
+            expYear: 2000 + expYear,
+            cvc: card.cardCvv,
           });
 
           storePaymentMethodId(sessionId, paymentMethod.id);
@@ -386,6 +416,20 @@ export function createToolSet(meta: ToolMeta) {
 // Error helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Detect "no payment method configured" errors.
+ * Uses CardNotFoundError from the SDK hierarchy when available (per Nekuda docs),
+ * with a fallback for cases where the SDK wraps the error generically.
+ */
+function isNoPaymentMethodError(err: unknown): boolean {
+  if (err instanceof CardNotFoundError) return true;
+  if (!(err instanceof NekudaApiError)) return false;
+  if (err.statusCode !== 400) return false;
+  const msg = err.message.toLowerCase();
+  return msg.includes("no payment method") || msg.includes("no card") ||
+    msg.includes("unknown error");
+}
+
 function isCvvExpiredError(err: NekudaApiError): boolean {
   const msg = err.message.toLowerCase();
   return (
@@ -398,6 +442,46 @@ function handleNekudaError(
   toolName: string,
   sessionId: string
 ): { error: string; retryable: boolean } {
+  if (err instanceof CardNotFoundError) {
+    log.error(`${toolName} card not found`, {
+      code: err.code,
+      status: err.statusCode,
+      userId: err.userId,
+    });
+    updateSession(sessionId, { error: "Card not found" });
+    return { error: "Card not found. Please add a payment method on the Wallet page.", retryable: false };
+  }
+
+  if (err instanceof AuthenticationError) {
+    log.error(`${toolName} Nekuda auth failed`, {
+      code: err.code,
+      status: err.statusCode,
+    });
+    updateSession(sessionId, { error: "Payment service authentication failed" });
+    return {
+      error: "Payment service configuration error. Please contact support.",
+      retryable: false,
+    };
+  }
+
+  if (err instanceof NekudaConnectionError) {
+    log.warn(`${toolName} Nekuda connection error`, {
+      message: err.message,
+    });
+    return {
+      error: "Could not reach the payment service. Please try again in a moment.",
+      retryable: true,
+    };
+  }
+
+  if (err instanceof NekudaValidationError) {
+    log.error(`${toolName} Nekuda validation error (possible SDK/API mismatch)`, {
+      message: err.message,
+    });
+    updateSession(sessionId, { error: err.message });
+    return { error: err.message, retryable: false };
+  }
+
   if (err instanceof NekudaApiError) {
     const retryable = [429, 503].includes(err.statusCode);
     log.error(`${toolName} Nekuda API error`, {
