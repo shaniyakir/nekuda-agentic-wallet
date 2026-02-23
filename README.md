@@ -8,7 +8,7 @@ Built as a reference implementation for **agentic commerce**: the pattern where 
 
 ## Live Demo
 
-> **[https://your-app.vercel.app](https://your-app.vercel.app)** ← replace with your Vercel URL
+> **https://nekuda-agentic-wallet.vercel.app/** 
 
 **What the demo supports:**
 - Sign in via magic link (email → encrypted cookie session)
