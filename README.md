@@ -12,6 +12,7 @@ Built as a reference implementation for **agentic commerce**: the pattern where 
 
 **What the demo supports:**
 - Sign in via magic link (email → encrypted cookie session)
+- **Wallet page** (`/wallet`): Nekuda's embedded wallet UI (`@nekuda/wallet`) for adding/managing payment methods, with automatic CVV re-entry when the security code expires
 - AI chat agent: browse products, build a cart, checkout
 - Nekuda mandate → card reveal → Stripe tokenization → payment
 - Real-time dashboard showing agent state, cart, and payment status
@@ -26,7 +27,8 @@ Built as a reference implementation for **agentic commerce**: the pattern where 
 | Framework | Next.js 16 (App Router) |
 | AI Agent | Vercel AI SDK (`streamText`, tool-calling, `useChat`) |
 | LLM | OpenAI `gpt-4o` |
-| Agentic Wallet | Nekuda JS SDK (`createMandate` → `requestCardRevealToken` → `revealCardDetails`) |
+| Agentic Wallet (backend) | Nekuda JS SDK (`createMandate` → `requestCardRevealToken` → `revealCardDetails`) |
+| Wallet UI (frontend) | `@nekuda/wallet` (`NekudaWallet`, `NekudaCvvCollector`, `WalletProvider`) |
 | Payment Processing | Stripe (PaymentIntent + server-side tokenization) |
 | Auth | Magic link + iron-session (encrypted cookie) |
 | Email | Resend (optional; falls back to console in dev) |
@@ -79,9 +81,16 @@ POST /api/agent/chat ──► streamText(gpt-4o)
 - The LLM only sees `{ success: true, last4: "XXXX" }` after tokenization.
 - The in-process session vault holds only `pm_xxx` (Stripe PaymentMethod ID), which is useless without the secret key.
 
+**Known limitation (demo scope):**
+- Cart, session, and rate-limiter state is held in-memory (`Map`). This works for single-instance demos but won't survive serverless cold starts. The repository pattern is used throughout so swapping to Redis/DynamoDB is a one-file change per store.
+
 ---
 
 ## Core Flows
+
+### Wallet Setup (prerequisite)
+
+Visit `/wallet` → sign in via magic link → the embedded Nekuda wallet (`NekudaWallet`) lets the user add a payment method. The agent cannot create mandates until at least one card is registered. If the card's CVV expires, the wallet page surfaces a `NekudaCvvCollector` for re-entry.
 
 ### Browse → Cart → Checkout
 
@@ -167,12 +176,14 @@ cp .env.example .env.local
 | Variable | Required | Description |
 |---|---|---|
 | `OPENAI_API_KEY` | ✅ | OpenAI API key (gpt-4o) |
-| `NEKUDA_API_KEY` | ✅ | Nekuda SDK API key |
+| `NEKUDA_API_KEY` | ✅ | Nekuda SDK API key (backend) |
+| `NEXT_PUBLIC_NEKUDA_PUBLIC_KEY` | ✅ | Nekuda public key for the wallet UI (`@nekuda/wallet`) |
 | `STRIPE_SECRET_KEY` | ✅ | Stripe secret key (`sk_test_...`) |
 | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | ✅ | Stripe publishable key (`pk_test_...`) |
 | `SESSION_SECRET` | ✅ | ≥ 32 random chars — session encryption + HMAC signing |
 | `LANGFUSE_SECRET_KEY` | ✅ | Langfuse secret key |
 | `LANGFUSE_PUBLIC_KEY` | ✅ | Langfuse public key |
+| `LANGFUSE_BASEURL` | optional | Langfuse endpoint (defaults to `https://cloud.langfuse.com`) |
 | `RESEND_API_KEY` | optional | Email for magic links (console fallback if absent) |
 | `NEXT_PUBLIC_DEMO_MODE` | optional | Set to `"true"` to show magic link directly in UI (no email needed) |
 | `NEXT_PUBLIC_APP_URL` | optional | Base URL for magic links (auto-detected from request) |
