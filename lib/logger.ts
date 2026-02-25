@@ -20,7 +20,8 @@ type LogNamespace =
   | "AUTH"
   | "STRIPE"
   | "SESSION"
-  | "RATE_LIMIT";
+  | "RATE_LIMIT"
+  | "CHECKOUT";
 
 interface Logger {
   debug(message: string, meta?: Record<string, unknown>): void;
