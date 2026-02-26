@@ -28,6 +28,7 @@ A single Next.js monolith providing frontend, API, and agent — deployed as one
 | Payments (server-side) | Stripe (Test Mode) | PaymentIntent creation from `pm_xxx` |
 | Validation | Zod | Shared schemas for API, agent tools, and UI |
 | Auth | `iron-session` + `resend` | Magic link email auth, encrypted httpOnly cookies |
+| State Persistence | Vercel KV (`@upstash/redis`, `@upstash/ratelimit`) | Session, cart, and rate-limit state — survives serverless cold starts |
 | Observability | Langfuse (via `@langfuse/otel` + OpenTelemetry) | Tracing tool calls, LLM completions, token usage |
 | UI Components | shadcn/ui + Tailwind CSS + Lucide | Modern, accessible interface |
 
@@ -89,7 +90,7 @@ UserProvider (root layout — session context)
 - **Server-side secrets:** `NEKUDA_API_KEY`, `STRIPE_SECRET_KEY`, `OPENAI_API_KEY` — never exposed to browser.
 - **Client-side only:** `NEXT_PUBLIC_NEKUDA_PUBLIC_KEY` — used exclusively by wallet widget.
 - **Auth:** Magic link via `iron-session` encrypted httpOnly cookies. No passwords stored.
-- **Rate limiting:** Sliding-window per-userId limiter on the agent chat endpoint.
+- **Rate limiting:** Sliding-window per-userId limiter on the agent chat endpoint, persisted in Redis via `@upstash/ratelimit`.
 
 ---
 
@@ -97,8 +98,8 @@ UserProvider (root layout — session context)
 
 - **Browser-Use PCI Compliance:** Card credentials are never transmitted over HTTP from the server. They are typed into Stripe's PCI-certified Elements iframe via browser automation, achieving SAQ-A compliance. The agent acts like a human shopper — it sees the credentials and types them into the secure payment form.
 - **Price Integrity:** Prices recalculated from product repository at both checkout and payment — the agent's price is never trusted.
-- **Repository Pattern:** In-memory stores (`ProductRepo`, `CartRepo`) abstracted behind async interfaces for future database migration.
+- **Repository Pattern:** `SessionStore` and `CartRepo` backed by Vercel KV (Upstash Redis) for persistence across serverless cold starts. `ProductRepo` remains in-memory (static catalog).
 - **Direct Tool Invocation:** Agent tools call repositories directly (same process, no HTTP overhead).
 - **Error Resilience:** All agent tools return error objects instead of throwing, enabling LLM-driven error recovery.
-- **Session TTL:** Completed sessions evicted after 30 min, abandoned after 60 min (lazy eviction on access).
+- **Session TTL:** Sessions evicted via Redis native TTL — 30 min for completed, 60 min for active. Carts expire after 2 hours.
 - **Idempotent Payments:** Stripe PaymentIntent uses `idempotencyKey: pay_{checkoutId}` to prevent double charges.

@@ -82,8 +82,8 @@ POST /api/agent/chat ──► streamText(gpt-4o)
 - The LLM only sees `{ success: true, last4: "XXXX", orderId }` after checkout.
 - The server only receives `pm_xxx` (Stripe PaymentMethod ID) from the checkout page, never raw card data.
 
-**Known limitation (demo scope):**
-- Cart, session, and rate-limiter state is held in-memory (`Map`). This works for single-instance demos but won't survive serverless cold starts. The repository pattern is used throughout so swapping to Redis/DynamoDB is a one-file change per store.
+**State persistence:**
+- Cart, session, and rate-limiter state is stored in **Vercel KV** (Upstash Redis), ensuring data survives serverless cold starts and scales across multiple instances.
 
 ---
 
@@ -183,6 +183,8 @@ cp .env.example .env.local
 | `STRIPE_SECRET_KEY` | ✅ | Stripe secret key (`sk_test_...`) |
 | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | ✅ | Stripe publishable key (`pk_test_...`) |
 | `SESSION_SECRET` | ✅ | ≥ 32 random chars — session encryption + HMAC signing |
+| `UPSTASH_REDIS_REST_URL` | ✅ | Upstash Redis REST URL (from Vercel KV or Upstash console) |
+| `UPSTASH_REDIS_REST_TOKEN` | ✅ | Upstash Redis REST token |
 | `LANGFUSE_SECRET_KEY` | ✅ | Langfuse secret key |
 | `LANGFUSE_PUBLIC_KEY` | ✅ | Langfuse public key |
 | `LANGFUSE_BASEURL` | optional | Langfuse endpoint (defaults to `https://cloud.langfuse.com`) |
