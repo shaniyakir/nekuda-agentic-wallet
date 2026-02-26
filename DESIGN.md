@@ -23,7 +23,7 @@ A single Next.js monolith providing frontend, API, and agent — deployed as one
 | Wallet Frontend | `@nekuda/wallet` | Card collection & tokenization (React) |
 | Wallet Backend | `@nekuda/nekuda-js` | Mandate creation, reveal tokens, JIT card credentials |
 | Agent Engine | Vercel AI SDK (`ai`, `@ai-sdk/openai`, `@ai-sdk/react`) | Tool-calling agent loop, streaming, `useChat()` |
-| Browser Automation | Playwright (headless Chromium) | PCI-compliant checkout — types card credentials into Stripe Elements iframe |
+| Browser Automation | Playwright + @sparticuz/chromium | PCI-compliant checkout — types card credentials into Stripe Elements iframe (serverless-compatible) |
 | Payments (client-side) | `@stripe/stripe-js`, `@stripe/react-stripe-js` | Stripe Elements for secure client-side card tokenization |
 | Payments (server-side) | Stripe (Test Mode) | PaymentIntent creation from `pm_xxx` |
 | Validation | Zod | Shared schemas for API, agent tools, and UI |

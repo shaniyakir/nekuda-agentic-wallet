@@ -5,9 +5,13 @@
  * checkout page. Card credentials are typed directly into Stripe Elements
  * (a Stripe-hosted iframe) — they flow browser → Stripe iframe → Stripe servers.
  * The application server never transmits card data over HTTP.
+ *
+ * Environment detection:
+ * - Vercel (serverless): Uses @sparticuz/chromium for a lightweight browser
+ * - Local dev: Uses regular Playwright chromium
  */
 
-import { chromium, type Browser, type Page } from "playwright";
+import { chromium as playwrightChromium, type Browser, type Page } from "playwright-core";
 import { createLogger } from "@/lib/logger";
 import type {
   BillingDetailsResponse,
@@ -15,6 +19,9 @@ import type {
 } from "@nekuda/nekuda-js";
 
 const log = createLogger("CHECKOUT");
+
+/** True when running on Vercel serverless */
+const IS_SERVERLESS = !!process.env.VERCEL;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -87,8 +94,23 @@ export async function getBrowser(): Promise<Browser> {
   if (browserInstance && browserInstance.isConnected()) {
     return browserInstance;
   }
-  log.info("Launching headless Chromium");
-  browserInstance = await chromium.launch({ headless: true });
+
+  if (IS_SERVERLESS) {
+    // Vercel serverless: use @sparticuz/chromium (lightweight, fits in Lambda)
+    log.info("Launching serverless Chromium (@sparticuz/chromium)");
+    const chromium = await import("@sparticuz/chromium");
+    browserInstance = await playwrightChromium.launch({
+      args: chromium.default.args,
+      executablePath: await chromium.default.executablePath(),
+      headless: true,
+    });
+  } else {
+    // Local dev: use regular Playwright chromium
+    log.info("Launching local Chromium (Playwright)");
+    const { chromium } = await import("playwright");
+    browserInstance = await chromium.launch({ headless: true });
+  }
+
   return browserInstance;
 }
 

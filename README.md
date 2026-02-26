@@ -29,7 +29,7 @@ Built as a reference implementation for **agentic commerce**: the pattern where 
 | LLM | OpenAI `gpt-4o` |
 | Agentic Wallet (backend) | Nekuda JS SDK (`createMandate` → `requestCardRevealToken` → `revealCardDetails` → `getBillingDetails`) |
 | Wallet UI (frontend) | `@nekuda/wallet` (`NekudaWallet`, `NekudaCvvCollector`, `WalletProvider`) |
-| Browser Automation | Playwright (headless Chromium) — PCI-compliant checkout |
+| Browser Automation | Playwright + @sparticuz/chromium — PCI-compliant checkout (serverless-compatible) |
 | Payment UI | `@stripe/stripe-js`, `@stripe/react-stripe-js` (Stripe Elements) |
 | Payment Processing | Stripe (PaymentIntent from `pm_xxx` — server never sees card data) |
 | Auth | Magic link + iron-session (encrypted cookie) |
@@ -82,8 +82,9 @@ POST /api/agent/chat ──► streamText(gpt-4o)
 - The LLM only sees `{ success: true, last4: "XXXX", orderId }` after checkout.
 - The server only receives `pm_xxx` (Stripe PaymentMethod ID) from the checkout page, never raw card data.
 
-**State persistence:**
-- Cart, session, and rate-limiter state is stored in **Vercel KV** (Upstash Redis), ensuring data survives serverless cold starts and scales across multiple instances.
+**Serverless-ready:**
+- Cart, session, and rate-limiter state stored in **Vercel KV** (Upstash Redis) — survives cold starts
+- Browser automation uses **@sparticuz/chromium** — a lightweight Chromium build that runs inside serverless functions
 
 ---
 
@@ -154,7 +155,7 @@ Card data is **never transmitted over HTTP** from the server — it flows throug
 
 - Node.js ≥ 20
 - npm (or pnpm/yarn)
-- Playwright Chromium (`npx playwright install chromium`)
+- Playwright Chromium for local dev (`npx playwright install chromium`) — not needed on Vercel
 - Accounts: OpenAI, Nekuda, Stripe (test mode), Langfuse, Resend (optional)
 
 ### Install
