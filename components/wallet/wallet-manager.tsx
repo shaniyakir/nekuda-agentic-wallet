@@ -3,13 +3,12 @@
 /**
  * WalletManager — authenticated wallet view.
  *
- * Wraps @nekuda/wallet's WalletProvider + NekudaWallet and surfaces
- * NekudaCvvCollector when the default card's CVV has expired.
+ * WalletProvider is now lifted to the app layout (AppWalletProvider),
+ * so this component uses useWallet() directly without re-wrapping.
  */
 
 import { useState } from "react";
 import {
-  WalletProvider,
   NekudaWallet,
   NekudaCvvCollector,
   useWallet,
@@ -23,13 +22,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { ShieldAlert, CheckCircle2, LogOut } from "lucide-react";
+import { ShieldAlert, CheckCircle2 } from "lucide-react";
 
-const NEKUDA_PUBLIC_KEY = process.env.NEXT_PUBLIC_NEKUDA_PUBLIC_KEY ?? "";
-
-function WalletContent() {
+export function WalletManager() {
+  const { userId } = useUser();
   const wallet = useWallet();
   const [cvvRefreshed, setCvvRefreshed] = useState(false);
+
+  if (!userId) return null;
 
   const cards = wallet.payments.list;
   const defaultCard = cards.find((c: EnrichedPaymentMethod) => c.isDefault);
@@ -37,6 +37,13 @@ function WalletContent() {
 
   return (
     <div className="flex flex-col gap-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold">Your Wallet</h2>
+          <p className="text-sm text-muted-foreground">{userId}</p>
+        </div>
+      </div>
+
       {needsCvv && !cvvRefreshed && (
         <Card className="border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950">
           <CardHeader>
@@ -75,27 +82,6 @@ function WalletContent() {
       )}
 
       <NekudaWallet showSettings={false} />
-    </div>
-  );
-}
-
-export function WalletManager() {
-  const { userId } = useUser();
-
-  if (!userId) return null;
-
-  return (
-    <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-semibold">Your Wallet</h2>
-          <p className="text-sm text-muted-foreground">{userId}</p>
-        </div>
-      </div>
-
-      <WalletProvider publicKey={NEKUDA_PUBLIC_KEY} userId={userId}>
-        <WalletContent />
-      </WalletProvider>
     </div>
   );
 }
