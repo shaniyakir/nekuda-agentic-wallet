@@ -1,7 +1,6 @@
 "use client";
 
 import { useRef, useEffect, useState, useCallback, type FormEvent } from "react";
-import { useSearchParams } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
 import { useWallet, NekudaWallet, type EnrichedPaymentMethod } from "@nekuda/wallet";
 import { useUser } from "@/components/providers/user-provider";
@@ -222,15 +221,7 @@ function WalletAwareChat() {
 }
 
 export function ChatInterface() {
-  const { userId, refresh } = useUser();
-  const searchParams = useSearchParams();
-
-  useEffect(() => {
-    const authStatus = searchParams.get("auth");
-    if (authStatus === "success") {
-      refresh();
-    }
-  }, [searchParams, refresh]);
+  const { userId } = useUser();
 
   if (!userId) {
     return (
