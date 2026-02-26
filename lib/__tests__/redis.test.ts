@@ -7,22 +7,29 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+const mockConstructorArgs: unknown[] = [];
+
+class MockRedis {
+  get = vi.fn();
+  set = vi.fn();
+  del = vi.fn();
+  keys = vi.fn();
+  mget = vi.fn();
+  expire = vi.fn();
+
+  constructor(args: unknown) {
+    mockConstructorArgs.push(args);
+  }
+}
+
 vi.mock("@upstash/redis", () => ({
-  Redis: {
-    fromEnv: vi.fn(() => ({
-      get: vi.fn(),
-      set: vi.fn(),
-      del: vi.fn(),
-      keys: vi.fn(),
-      mget: vi.fn(),
-      expire: vi.fn(),
-    })),
-  },
+  Redis: MockRedis,
 }));
 
 describe("redis client", () => {
   beforeEach(() => {
     vi.resetModules();
+    mockConstructorArgs.length = 0;
   });
 
   it("exports a redis singleton with expected methods", async () => {
@@ -34,10 +41,13 @@ describe("redis client", () => {
     expect(typeof redis.del).toBe("function");
   });
 
-  it("uses Redis.fromEnv() to create the client", async () => {
-    const { Redis } = await import("@upstash/redis");
+  it("creates Redis client with KV_REST_API env vars", async () => {
     await import("@/lib/redis");
 
-    expect(Redis.fromEnv).toHaveBeenCalled();
+    expect(mockConstructorArgs.length).toBeGreaterThan(0);
+    expect(mockConstructorArgs[0]).toEqual({
+      url: process.env.KV_REST_API_URL,
+      token: process.env.KV_REST_API_TOKEN,
+    });
   });
 });

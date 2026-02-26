@@ -1,9 +1,9 @@
 /**
  * Upstash Redis client singleton.
  *
- * Uses environment variables set by Vercel's Upstash integration:
- *   - UPSTASH_REDIS_REST_URL
- *   - UPSTASH_REDIS_REST_TOKEN
+ * Uses environment variables auto-provisioned by Vercel KV:
+ *   - KV_REST_API_URL
+ *   - KV_REST_API_TOKEN
  *
  * Usage:
  *   import { redis } from "@/lib/redis";
@@ -13,4 +13,7 @@
 
 import { Redis } from "@upstash/redis";
 
-export const redis = Redis.fromEnv();
+export const redis = new Redis({
+  url: process.env.KV_REST_API_URL!,
+  token: process.env.KV_REST_API_TOKEN!,
+});

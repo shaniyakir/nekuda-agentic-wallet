@@ -6,31 +6,30 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 const mockStore = new Map<string, unknown>();
 
-vi.mock("@upstash/redis", () => ({
-  Redis: {
-    fromEnv: vi.fn(() => ({
-      get: vi.fn((key: string) => Promise.resolve(mockStore.get(key) ?? null)),
-      set: vi.fn((key: string, value: unknown) => {
-        mockStore.set(key, value);
-        return Promise.resolve("OK");
-      }),
-      del: vi.fn((key: string) => {
-        const existed = mockStore.has(key);
-        mockStore.delete(key);
-        return Promise.resolve(existed ? 1 : 0);
-      }),
-      keys: vi.fn((pattern: string) => {
-        const prefix = pattern.replace("*", "");
-        return Promise.resolve(
-          Array.from(mockStore.keys()).filter((k) => k.startsWith(prefix))
-        );
-      }),
-      mget: vi.fn((...keys: string[]) =>
-        Promise.resolve(keys.map((k) => mockStore.get(k) ?? null))
-      ),
-    })),
-  },
-}));
+vi.mock("@upstash/redis", () => {
+  class MockRedis {
+    get = vi.fn((key: string) => Promise.resolve(mockStore.get(key) ?? null));
+    set = vi.fn((key: string, value: unknown) => {
+      mockStore.set(key, value);
+      return Promise.resolve("OK");
+    });
+    del = vi.fn((key: string) => {
+      const existed = mockStore.has(key);
+      mockStore.delete(key);
+      return Promise.resolve(existed ? 1 : 0);
+    });
+    keys = vi.fn((pattern: string) => {
+      const prefix = pattern.replace("*", "");
+      return Promise.resolve(
+        Array.from(mockStore.keys()).filter((k) => k.startsWith(prefix))
+      );
+    });
+    mget = vi.fn((...keys: string[]) =>
+      Promise.resolve(keys.map((k) => mockStore.get(k) ?? null))
+    );
+  }
+  return { Redis: MockRedis };
+});
 
 import {
   getOrCreateSession,

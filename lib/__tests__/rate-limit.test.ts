@@ -7,17 +7,16 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("@upstash/redis", () => ({
-  Redis: {
-    fromEnv: vi.fn(() => ({
-      get: vi.fn(),
-      set: vi.fn(),
-      eval: vi.fn(),
-      evalsha: vi.fn(),
-      scriptLoad: vi.fn(),
-    })),
-  },
-}));
+vi.mock("@upstash/redis", () => {
+  class MockRedis {
+    get = vi.fn();
+    set = vi.fn();
+    eval = vi.fn();
+    evalsha = vi.fn();
+    scriptLoad = vi.fn();
+  }
+  return { Redis: MockRedis };
+});
 
 vi.mock("@upstash/ratelimit", () => {
   const mockLimit = vi.fn();

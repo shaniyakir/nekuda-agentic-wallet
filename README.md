@@ -183,8 +183,8 @@ cp .env.example .env.local
 | `STRIPE_SECRET_KEY` | ✅ | Stripe secret key (`sk_test_...`) |
 | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | ✅ | Stripe publishable key (`pk_test_...`) |
 | `SESSION_SECRET` | ✅ | ≥ 32 random chars — session encryption + HMAC signing |
-| `UPSTASH_REDIS_REST_URL` | ✅ | Upstash Redis REST URL (from Vercel KV or Upstash console) |
-| `UPSTASH_REDIS_REST_TOKEN` | ✅ | Upstash Redis REST token |
+| `KV_REST_API_URL` | ✅ | Vercel KV REST URL (auto-provisioned when you connect KV storage) |
+| `KV_REST_API_TOKEN` | ✅ | Vercel KV REST token (auto-provisioned) |
 | `LANGFUSE_SECRET_KEY` | ✅ | Langfuse secret key |
 | `LANGFUSE_PUBLIC_KEY` | ✅ | Langfuse public key |
 | `LANGFUSE_BASEURL` | optional | Langfuse endpoint (defaults to `https://cloud.langfuse.com`) |
