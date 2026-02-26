@@ -35,6 +35,7 @@ import {
   completeCheckoutViasBrowser,
   closeBrowser,
 } from "@/lib/agent/browser";
+import { generateCheckoutToken } from "@/lib/agent/checkout-token";
 
 const log = createLogger("AGENT");
 
@@ -289,12 +290,14 @@ export function createToolSet(meta: ToolMeta) {
         try {
           updateSession(sessionId, { browserCheckoutStatus: "browser_filling" });
 
+          const checkoutToken = generateCheckoutToken(checkoutId);
           const result = await completeCheckoutViasBrowser({
             checkoutId,
             billing,
             email: userId,
             card: cardCredentials.credentials,
             baseUrl,
+            checkoutToken,
           });
 
           if (!result.success) {
@@ -304,7 +307,11 @@ export function createToolSet(meta: ToolMeta) {
               paymentStatus: "failed",
               error: result.error ?? "Browser checkout failed",
             });
-            return { error: result.error ?? "Payment failed during browser checkout", retryable: true };
+            const isExpired = result.error?.includes("CHECKOUT_SESSION_EXPIRED");
+            return {
+              error: result.error ?? "Payment failed during browser checkout",
+              retryable: !isExpired,
+            };
           }
 
           updateSession(sessionId, {

@@ -190,14 +190,18 @@ describe("system prompt", () => {
     expect(SYSTEM_PROMPT).not.toContain("Nekuda Buyer Agent");
   });
 
-  it("mentions AI isolation / security vault", async () => {
+  it("mentions AI isolation and browser automation security", async () => {
     const { SYSTEM_PROMPT } = await import("@/lib/agent/system-prompt");
     expect(SYSTEM_PROMPT).toContain("NEVER have access to full card numbers");
-    expect(SYSTEM_PROMPT).toContain("secure vault");
+    expect(SYSTEM_PROMPT).toContain("browser automation");
   });
 
-  it("does not mention revealCardDetails as a separate tool", async () => {
+  it("references completeCheckout, not old tool names", async () => {
     const { SYSTEM_PROMPT } = await import("@/lib/agent/system-prompt");
-    expect(SYSTEM_PROMPT).not.toContain("**revealCardDetails**");
+    expect(SYSTEM_PROMPT).toContain("completeCheckout");
+    expect(SYSTEM_PROMPT).not.toContain("**requestCardRevealToken**");
+    expect(SYSTEM_PROMPT).not.toContain("**executePayment**");
+    expect(SYSTEM_PROMPT).not.toContain("credential TTL");
+    expect(SYSTEM_PROMPT).not.toContain("secure vault");
   });
 });

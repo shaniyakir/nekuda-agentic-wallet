@@ -158,7 +158,7 @@ export async function fillStripeCard(
   log.info("Filling card in Stripe Elements iframe");
 
   const stripeFrame = page.frameLocator(
-    'iframe[name^="__privateStripeFrame"]'
+    'iframe[title="Secure card payment input frame"]'
   );
 
   await stripeFrame
@@ -229,19 +229,43 @@ export interface CompleteCheckoutOptions {
   email: string;
   card: CardCredentials;
   baseUrl: string;
+  /** HMAC-signed checkout session token set as an httpOnly cookie so the
+   *  checkout API routes can verify this is a legitimate Playwright request. */
+  checkoutToken: string;
 }
 
 /**
  * Run the full browser-use checkout flow:
- * navigate → fill billing → fill card in Stripe iframe → submit → parse result.
+ * set auth cookie → navigate → fill billing → fill card in Stripe iframe → submit → parse result.
  */
 export async function completeCheckoutViasBrowser(
   options: CompleteCheckoutOptions
 ): Promise<CheckoutResult> {
-  const { checkoutId, billing, email, card, baseUrl } = options;
+  const { checkoutId, billing, email, card, baseUrl, checkoutToken } = options;
 
   const browser = await getBrowser();
+
+  // Parse origin so the cookie domain is always correct (localhost vs Vercel).
+  const { hostname, protocol } = new URL(baseUrl);
+  const isSecure = protocol === "https:";
+
   const context = await browser.newContext();
+
+  // Set the HMAC-signed checkout token as an httpOnly cookie before navigation.
+  // The checkout GET and pay POST routes verify this cookie — they reject any
+  // request without a valid, unexpired token bound to this checkoutId.
+  await context.addCookies([
+    {
+      name: "checkout-token",
+      value: checkoutToken,
+      domain: hostname,
+      path: `/api/checkout/${checkoutId}`,
+      httpOnly: true,
+      secure: isSecure,
+      sameSite: "Lax",
+    },
+  ]);
+
   const page = await context.newPage();
 
   try {

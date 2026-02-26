@@ -9,7 +9,8 @@ import { randomUUID } from "crypto";
 import type { Cart, CartItem, CartStatus } from "@/lib/types";
 import { productRepo } from "./product-repo";
 
-const carts: Map<string, Cart> = new Map();
+const g = globalThis as unknown as { __cartStore?: Map<string, Cart> };
+const carts: Map<string, Cart> = (g.__cartStore ??= new Map());
 
 function recalcTotal(items: CartItem[]): number {
   return items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);

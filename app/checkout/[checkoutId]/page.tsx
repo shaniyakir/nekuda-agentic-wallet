@@ -374,18 +374,13 @@ export default function CheckoutPage() {
   useEffect(() => {
     async function loadCart() {
       try {
-        const res = await fetch(`/api/merchant/cart/${checkoutId}`);
+        const res = await fetch(`/api/checkout/${checkoutId}`);
         if (!res.ok) {
           const data = await res.json();
           setError(data.error ?? "Cart not found");
           return;
         }
-        const data = await res.json();
-        if (data.status !== "checked_out") {
-          setError(`Cart status is "${data.status}" — must be checked out first`);
-          return;
-        }
-        setCart(data);
+        setCart(await res.json());
       } catch {
         setError("Failed to load cart");
       } finally {

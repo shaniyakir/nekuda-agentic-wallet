@@ -2,8 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { CardDetailsResponse } from "@nekuda/nekuda-js";
 
 // ---------------------------------------------------------------------------
-// Mock Playwright — vi.mock is hoisted, so use factory with inline values
+// Mock Playwright — vi.mock is hoisted, so use vi.hoisted() for any variables
+// referenced inside the factory (otherwise they're in the TDZ at hoist time).
 // ---------------------------------------------------------------------------
+
+const mockAddCookies = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 const mockFill = vi.fn();
 const mockClick = vi.fn();
@@ -37,6 +40,7 @@ vi.mock("playwright", () => {
   const browser = {
     isConnected: () => true,
     newContext: vi.fn().mockResolvedValue({
+      addCookies: mockAddCookies,
       newPage: vi.fn().mockResolvedValue({}),
       close: vi.fn(),
     }),
@@ -59,6 +63,7 @@ import {
   submitAndWaitForResult,
   getBrowser,
   closeBrowser,
+  completeCheckoutViasBrowser,
 } from "@/lib/agent/browser";
 
 // ---------------------------------------------------------------------------
@@ -299,7 +304,7 @@ describe("fillStripeCard", () => {
     await fillStripeCard(mockPage, card);
 
     expect(mockFrameLocator).toHaveBeenCalledWith(
-      'iframe[name^="__privateStripeFrame"]'
+      'iframe[title="Secure card payment input frame"]'
     );
     expect(mockFrameLocatorLocator).toHaveBeenCalledWith(
       '[name="cardnumber"]'
@@ -364,5 +369,58 @@ describe("submitAndWaitForResult", () => {
     const result = await submitAndWaitForResult(mockPage);
     expect(result.success).toBe(false);
     expect(result.error).toBe("Insufficient funds");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// completeCheckoutViasBrowser — cookie injection
+// ---------------------------------------------------------------------------
+
+describe("completeCheckoutViasBrowser", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAddCookies.mockResolvedValue(undefined);
+  });
+
+  it("calls addCookies with the checkout token before navigating", async () => {
+    // Make goto + error-check succeed, submit return an error immediately
+    mockGoto.mockResolvedValue(undefined);
+    mockIsVisible.mockResolvedValue(false);
+    mockLocator.mockReturnValue({
+      fill: mockFill,
+      click: mockClick,
+      isVisible: mockIsVisible,
+      textContent: mockTextContent,
+      waitFor: vi.fn().mockRejectedValue(new Error("timeout")),
+    });
+
+    const options = {
+      checkoutId: "cart_cookie_test",
+      billing: {
+        userId: "u@test.com",
+        cardholderName: "Test User",
+        phoneNumber: "+15550001111",
+        billingAddress: "1 Test St",
+        zipCode: "00000",
+      },
+      email: "u@test.com",
+      card: { number: "4242424242424242", expiry: "1226", cvc: "314" },
+      baseUrl: "http://localhost:3000",
+      checkoutToken: "tok.abc.sig",
+    };
+
+    // Should not throw — errors are caught and returned as { success: false }
+    await completeCheckoutViasBrowser(options);
+
+    expect(mockAddCookies).toHaveBeenCalledOnce();
+    const [cookies] = mockAddCookies.mock.calls[0];
+    expect(cookies).toHaveLength(1);
+    expect(cookies[0]).toMatchObject({
+      name: "checkout-token",
+      value: "tok.abc.sig",
+      domain: "localhost",
+      path: "/api/checkout/cart_cookie_test",
+      httpOnly: true,
+    });
   });
 });

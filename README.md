@@ -1,6 +1,6 @@
 # ByteShop — AI-Powered Shopping with Secure Agentic Payments
 
-ByteShop is a full-stack demo of an **AI shopping assistant** that can browse a product catalog, manage a cart, and complete checkout — entirely through natural-language chat. The payment flow is powered by [Nekuda](https://nekuda.ai/)'s agentic wallet: the agent obtains a spending mandate, reveals card credentials via a time-limited token, tokenizes them through Stripe, and executes a `PaymentIntent` — all without raw card data ever touching the LLM or logs.
+ByteShop is a full-stack demo of an **AI shopping assistant** that can browse a product catalog, manage a cart, and complete checkout — entirely through natural-language chat. The payment flow is powered by [Nekuda](https://nekuda.ai/)'s agentic wallet: the agent obtains a spending mandate, reveals card credentials, and completes payment via **browser automation** — typing card details directly into a Stripe Elements iframe so they never travel over HTTP from the server. PCI SAQ-A compliant by design.
 
 Built as a reference implementation for **agentic commerce**: the pattern where an AI agent executes multi-step workflows on behalf of a user, including making real (or sandboxed) financial transactions with explicit user authorization at each stage.
 
@@ -14,7 +14,7 @@ Built as a reference implementation for **agentic commerce**: the pattern where 
 - Sign in via magic link (email → encrypted cookie session)
 - **Wallet page** (`/wallet`): Nekuda's embedded wallet UI (`@nekuda/wallet`) for adding/managing payment methods, with automatic CVV re-entry when the security code expires
 - AI chat agent: browse products, build a cart, checkout
-- Nekuda mandate → card reveal → Stripe tokenization → payment
+- Nekuda mandate → card reveal → browser-use checkout (Playwright + Stripe Elements)
 - Real-time dashboard showing agent state, cart, and payment status
 - Full Langfuse trace for every LLM call and tool invocation
 
@@ -27,9 +27,11 @@ Built as a reference implementation for **agentic commerce**: the pattern where 
 | Framework | Next.js 16 (App Router) |
 | AI Agent | Vercel AI SDK (`streamText`, tool-calling, `useChat`) |
 | LLM | OpenAI `gpt-4o` |
-| Agentic Wallet (backend) | Nekuda JS SDK (`createMandate` → `requestCardRevealToken` → `revealCardDetails`) |
+| Agentic Wallet (backend) | Nekuda JS SDK (`createMandate` → `requestCardRevealToken` → `revealCardDetails` → `getBillingDetails`) |
 | Wallet UI (frontend) | `@nekuda/wallet` (`NekudaWallet`, `NekudaCvvCollector`, `WalletProvider`) |
-| Payment Processing | Stripe (PaymentIntent + server-side tokenization) |
+| Browser Automation | Playwright (headless Chromium) — PCI-compliant checkout |
+| Payment UI | `@stripe/stripe-js`, `@stripe/react-stripe-js` (Stripe Elements) |
+| Payment Processing | Stripe (PaymentIntent from `pm_xxx` — server never sees card data) |
 | Auth | Magic link + iron-session (encrypted cookie) |
 | Email | Resend (optional; falls back to console in dev) |
 | Observability | Langfuse via OpenTelemetry (`@langfuse/otel` + Next.js instrumentation hook) |
@@ -59,27 +61,26 @@ POST /api/agent/chat ──► streamText(gpt-4o)
                     │                                         │
                     │  createMandate  ──────────────────────► Nekuda API
                     │                                         │
-                    │  requestCardRevealToken:                │
+                    │  completeCheckout:                      │
                     │    1. requestCardRevealToken ─────────► Nekuda API
                     │    2. revealCardDetails ──────────────► Nekuda API
-                    │    3. POST /v1/tokens (pk_test_) ─────► Stripe API
-                    │    4. paymentMethods.create ──────────► Stripe API
-                    │    5. store pm_xxx in session vault     │
-                    │       (raw card data discarded)         │
-                    │                                         │
-                    │  executePayment:                        │
-                    │    1. read pm_xxx from session vault    │
-                    │    2. paymentIntents.create+confirm ──► Stripe API
-                    │    3. clear pm_xxx from vault           │
+                    │    3. getBillingDetails ──────────────► Nekuda API
+                    │    4. Playwright (headless browser):    │
+                    │       → navigate to /checkout/[id]      │
+                    │       → fill billing form               │
+                    │       → type card into Stripe iframe ─► Stripe (client-side tokenization)
+                    │       → submit → pm_xxx                 │
+                    │    5. /api/checkout/[id]/pay:           │
+                    │       → paymentIntents.create(pm_xxx) ► Stripe API
                     └─────────────────────────────────────────┘
                               │
                     Langfuse OTel traces (no PII/card data)
 ```
 
 **Key invariants:**
-- Raw card data (PAN, CVV, expiry) exists only in ephemeral local variables during `requestCardRevealToken`, for ~100ms.
-- The LLM only sees `{ success: true, last4: "XXXX" }` after tokenization.
-- The in-process session vault holds only `pm_xxx` (Stripe PaymentMethod ID), which is useless without the secret key.
+- Card data **never travels over HTTP** from the application server. It flows from server memory → Playwright keystrokes → Stripe Elements iframe → Stripe servers.
+- The LLM only sees `{ success: true, last4: "XXXX", orderId }` after checkout.
+- The server only receives `pm_xxx` (Stripe PaymentMethod ID) from the checkout page, never raw card data.
 
 **Known limitation (demo scope):**
 - Cart, session, and rate-limiter state is held in-memory (`Map`). This works for single-instance demos but won't survive serverless cold starts. The repository pattern is used throughout so swapping to Redis/DynamoDB is a one-file change per store.
@@ -107,29 +108,27 @@ User: "Checkout"
   → returns checkoutId + server-verified total
 ```
 
-### Payment Flow (Mandate → Tokenize → PaymentIntent)
+### Payment Flow (Mandate → Browser-Use Checkout)
 
 ```
-1. createMandate(product, price)
+1. createMandate(checkoutId)
       → Nekuda: create spending mandate → mandateId
       → User pre-authorized this via Nekuda wallet setup
 
-2. requestCardRevealToken(mandateId)
-      → Nekuda: request reveal token
-      → Nekuda: reveal card details (PAN, CVV, expiry)
-      → Stripe: POST /v1/tokens with pk_test_ → tokenId
-      → Stripe: paymentMethods.create(token) → pm_xxx
-      → Store pm_xxx in server-side session vault
-      → Discard raw card data
-      → Return { success: true, last4: "4242" } to LLM
-
-3. executePayment(checkoutId)
-      → Read pm_xxx from vault (never the raw card)
-      → Re-calculate total server-side (price integrity)
-      → stripe.paymentIntents.create({ amount, payment_method: pm_xxx, confirm: true })
-      → Clear pm_xxx from vault
-      → Return { orderId, stripePaymentIntentId, status: "succeeded" }
+2. completeCheckout(checkoutId, mandateId)
+      → Nekuda: requestCardRevealToken(mandateId) → revealToken
+      → Nekuda: revealCardDetails(revealToken) → card credentials (DPAN for Visa)
+      → Nekuda: getBillingDetails() → name, address, phone
+      → Playwright: navigate to /checkout/[checkoutId]
+      → Playwright: fill billing form (name, email, address, phone, zip)
+      → Playwright: type card credentials into Stripe Elements iframe
+      → Stripe Elements: tokenize client-side → pm_xxx
+      → Checkout page: POST pm_xxx to /api/checkout/[checkoutId]/pay
+      → Server: paymentIntents.create(pm_xxx) → succeeded
+      → Return { success: true, orderId, last4: "xxxx", status: "succeeded" }
 ```
+
+Card data is **never transmitted over HTTP** from the server — it flows through Playwright keystrokes directly into Stripe's PCI-certified iframe (SAQ-A compliance).
 
 ---
 
@@ -137,10 +136,11 @@ User: "Checkout"
 
 | Risk | Mitigation |
 |---|---|
-| Raw card data in logs | PAN/CVV/expiry are ephemeral local variables; never logged, never returned to LLM |
+| Card data over HTTP | Card credentials are typed into Stripe Elements iframe via browser automation — never sent over HTTP from the server (PCI SAQ-A) |
+| Card data in server memory | Ephemeral — exists only during `completeCheckout` execution (~seconds), never stored or logged |
 | Card data in Langfuse traces | Telemetry metadata only contains redacted userId + sessionId hash |
 | Email in logs | `redactEmail()` truncates to `sh***@gm***.com` before any log call |
-| Price manipulation | `executePayment` re-calculates total from the product repository; LLM-provided amounts are ignored |
+| Price manipulation | Checkout API re-calculates total from the product repository; LLM-provided amounts are ignored |
 | Magic link replay (serverless) | HMAC-SHA256 signed tokens with 10-min TTL; stateless — works across Vercel instances |
 | Session hijacking | iron-session encrypts the cookie with SESSION_SECRET (AES-256) |
 | Stripe live keys in test | Client asserts `sk_test_` prefix on init and logs mode |
@@ -154,6 +154,7 @@ User: "Checkout"
 
 - Node.js ≥ 20
 - npm (or pnpm/yarn)
+- Playwright Chromium (`npx playwright install chromium`)
 - Accounts: OpenAI, Nekuda, Stripe (test mode), Langfuse, Resend (optional)
 
 ### Install
@@ -162,6 +163,7 @@ User: "Checkout"
 git clone https://github.com/your-org/nekuda-agentic-wallet.git
 cd nekuda-agentic-wallet
 npm install
+npx playwright install chromium
 ```
 
 ### Environment Variables
@@ -187,6 +189,7 @@ cp .env.example .env.local
 | `RESEND_API_KEY` | optional | Email for magic links (console fallback if absent) |
 | `NEXT_PUBLIC_DEMO_MODE` | optional | Set to `"true"` to show magic link directly in UI (no email needed) |
 | `NEXT_PUBLIC_APP_URL` | optional | Base URL for magic links (auto-detected from request) |
+| `NEXT_PUBLIC_BASE_URL` | optional | Base URL for browser automation checkout (defaults to `http://localhost:3000`) |
 | `NEKUDA_BASE_URL` | optional | Nekuda base URL override (sandbox) |
 
 Generate `SESSION_SECRET`:
@@ -210,4 +213,3 @@ npm run dev
 ```bash
 npm test
 ```
-

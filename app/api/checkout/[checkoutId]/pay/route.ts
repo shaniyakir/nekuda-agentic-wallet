@@ -15,6 +15,10 @@ import { stripe } from "@/lib/stripe";
 import { cartRepo } from "@/lib/merchant/cart-repo";
 import { productRepo } from "@/lib/merchant/product-repo";
 import { createLogger, redactEmail } from "@/lib/logger";
+import {
+  verifyCheckoutToken,
+  CHECKOUT_TOKEN_COOKIE,
+} from "@/lib/agent/checkout-token";
 
 const log = createLogger("CHECKOUT");
 
@@ -30,6 +34,14 @@ export async function POST(
   { params }: { params: Promise<{ checkoutId: string }> }
 ) {
   const { checkoutId } = await params;
+
+  const token = request.cookies.get(CHECKOUT_TOKEN_COOKIE)?.value ?? "";
+  if (!verifyCheckoutToken(token, checkoutId)) {
+    return NextResponse.json(
+      { error: "CHECKOUT_SESSION_EXPIRED" },
+      { status: 401 }
+    );
+  }
 
   let body: z.infer<typeof PayRequestSchema>;
   try {
