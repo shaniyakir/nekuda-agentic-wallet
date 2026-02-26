@@ -16,7 +16,6 @@ import {
   type EnrichedPaymentMethod,
 } from "@nekuda/wallet";
 import { useUser } from "@/components/providers/user-provider";
-import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -81,7 +80,7 @@ function WalletContent() {
 }
 
 export function WalletManager() {
-  const { userId, logout } = useUser();
+  const { userId } = useUser();
 
   if (!userId) return null;
 
@@ -92,10 +91,6 @@ export function WalletManager() {
           <h2 className="text-lg font-semibold">Your Wallet</h2>
           <p className="text-sm text-muted-foreground">{userId}</p>
         </div>
-        <Button variant="ghost" size="sm" onClick={logout}>
-          <LogOut className="size-4" />
-          Sign out
-        </Button>
       </div>
 
       <WalletProvider publicKey={NEKUDA_PUBLIC_KEY} userId={userId}>

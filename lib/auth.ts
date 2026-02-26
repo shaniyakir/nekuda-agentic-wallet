@@ -3,7 +3,7 @@
  *
  * Flow:
  *   1. User enters email → POST /api/auth/magic-link → email sent with token link
- *   2. User clicks link → GET /api/auth/verify?token=x → session set, redirect to /wallet
+ *   2. User clicks link → GET /api/auth/verify?token=x → session set, redirect to / (chat)
  *   3. All subsequent requests read userId (email) from encrypted cookie
  *
  *

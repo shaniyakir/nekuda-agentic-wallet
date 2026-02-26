@@ -1,13 +1,17 @@
 "use client";
 
-import { useRef, useEffect, useState, type FormEvent } from "react";
+import { useRef, useEffect, useState, useCallback, type FormEvent } from "react";
+import { useSearchParams } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
+import { useWallet, NekudaWallet, type EnrichedPaymentMethod } from "@nekuda/wallet";
 import { useUser } from "@/components/providers/user-provider";
 import { useChatInstance } from "@/components/providers/chat-provider";
 import { ToolCallDisplay } from "@/components/chat/tool-call-display";
+import { MagicLinkForm } from "@/components/wallet/magic-link-form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import {
   Send,
@@ -15,10 +19,11 @@ import {
   AlertCircle,
   Bot,
   User as UserIcon,
+  Wallet,
 } from "lucide-react";
 
-export function ChatInterface() {
-  const { userId } = useUser();
+function WalletAwareChat() {
+  const wallet = useWallet();
   const chat = useChatInstance();
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -30,6 +35,10 @@ export function ChatInterface() {
   );
 
   const isStreaming = status === "streaming" || status === "submitted";
+
+  const handleCvvSuccess = useCallback(() => {
+    sendMessage({ text: "I've updated my CVV, please retry the payment." });
+  }, [sendMessage]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -45,20 +54,26 @@ export function ChatInterface() {
     sendMessage({ text });
   }
 
-  if (!userId) {
+  const cards = wallet.payments.list;
+  const defaultCard = cards.find((c: EnrichedPaymentMethod) => c.isDefault);
+
+  if (!defaultCard) {
     return (
-      <div className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center">
-        <div className="text-center">
-          <AlertCircle className="mx-auto size-12 text-muted-foreground/50" />
-          <h2 className="mt-4 text-xl font-semibold">Sign in required</h2>
-          <p className="mt-2 text-muted-foreground">
-            Visit the{" "}
-            <a href="/wallet" className="font-medium text-primary underline">
-              Wallet page
-            </a>{" "}
-            to sign in before chatting.
-          </p>
-        </div>
+      <div className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+        <Card className="w-full max-w-md">
+          <CardHeader className="text-center">
+            <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-primary/10">
+              <Wallet className="size-6 text-primary" />
+            </div>
+            <CardTitle>Add a Payment Method</CardTitle>
+            <CardDescription>
+              Connect a card to your wallet to enable AI-powered checkout.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <NekudaWallet showSettings={false} />
+          </CardContent>
+        </Card>
       </div>
     );
   }
@@ -140,6 +155,7 @@ export function ChatInterface() {
                               }
                             : undefined
                         }
+                        onCvvSuccess={handleCvvSuccess}
                       />
                     );
                   }
@@ -203,4 +219,37 @@ export function ChatInterface() {
       </div>
     </div>
   );
+}
+
+export function ChatInterface() {
+  const { userId, refresh } = useUser();
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    const authStatus = searchParams.get("auth");
+    if (authStatus === "success") {
+      refresh();
+    }
+  }, [searchParams, refresh]);
+
+  if (!userId) {
+    return (
+      <div className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+        <div className="w-full max-w-md">
+          <div className="mb-6 text-center">
+            <div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-full bg-primary/10">
+              <Bot className="size-6 text-primary" />
+            </div>
+            <h1 className="text-2xl font-bold">Welcome to ByteShop</h1>
+            <p className="mt-2 text-muted-foreground">
+              Sign in to start shopping with your AI assistant.
+            </p>
+          </div>
+          <MagicLinkForm />
+        </div>
+      </div>
+    );
+  }
+
+  return <WalletAwareChat />;
 }

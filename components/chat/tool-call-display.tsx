@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { InlineCvvCollector } from "@/components/chat/inline-cvv-collector";
 
 interface ToolCallPart {
   toolCallId: string;
@@ -30,6 +31,7 @@ interface ToolResultPart {
 interface ToolCallDisplayProps {
   toolInvocation: ToolCallPart;
   toolResult?: ToolResultPart;
+  onCvvSuccess?: () => void;
 }
 
 const toolMeta: Record<string, { icon: typeof Package; label: string; color: string }> = {
@@ -43,11 +45,17 @@ const toolMeta: Record<string, { icon: typeof Package; label: string; color: str
   executePayment: { icon: DollarSign, label: "Processing payment", color: "text-emerald-500" },
 };
 
-function formatResult(result: unknown): { status: "success" | "error"; summary: string } {
+type ResultStatus = "success" | "error" | "cvv_required";
+
+function formatResult(result: unknown): { status: ResultStatus; summary: string } {
   if (result == null) return { status: "success", summary: "Done" };
   if (typeof result !== "object") return { status: "success", summary: String(result) };
 
   const obj = result as Record<string, unknown>;
+
+  if (obj.error === "CVV_EXPIRED") {
+    return { status: "cvv_required", summary: "CVV expired" };
+  }
 
   if (obj.error) {
     return { status: "error", summary: String(obj.error) };
@@ -72,7 +80,7 @@ function formatResult(result: unknown): { status: "success" | "error"; summary: 
   return { status: "success", summary: "Done" };
 }
 
-export function ToolCallDisplay({ toolInvocation, toolResult }: ToolCallDisplayProps) {
+export function ToolCallDisplay({ toolInvocation, toolResult, onCvvSuccess }: ToolCallDisplayProps) {
   const meta = toolMeta[toolInvocation.toolName] ?? {
     icon: Package,
     label: toolInvocation.toolName,
@@ -81,6 +89,22 @@ export function ToolCallDisplay({ toolInvocation, toolResult }: ToolCallDisplayP
   const Icon = meta.icon;
   const isLoading = !toolResult;
   const { status, summary } = toolResult ? formatResult(toolResult.result) : { status: "success" as const, summary: "" };
+
+  if (status === "cvv_required" && onCvvSuccess) {
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-sm">
+          <Icon className={cn("size-4 shrink-0", meta.color)} />
+          <span className="font-medium">{meta.label}</span>
+          <Badge variant="secondary" className="ml-auto text-xs">
+            <AlertCircle className="mr-1 size-3" />
+            Action required
+          </Badge>
+        </div>
+        <InlineCvvCollector onSuccess={onCvvSuccess} />
+      </div>
+    );
+  }
 
   return (
     <div className="flex items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-sm">

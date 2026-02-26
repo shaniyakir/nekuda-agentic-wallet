@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { UserProvider } from "@/components/providers/user-provider";
 import { ChatProvider } from "@/components/providers/chat-provider";
+import { AppWalletProvider } from "@/components/providers/wallet-provider";
 import { Navbar } from "@/components/layout/navbar";
 import "./globals.css";
 
@@ -32,8 +33,10 @@ export default function RootLayout({
       >
         <UserProvider>
           <ChatProvider>
-            <Navbar />
-            <main>{children}</main>
+            <AppWalletProvider>
+              <Navbar />
+              <main>{children}</main>
+            </AppWalletProvider>
           </ChatProvider>
         </UserProvider>
       </body>

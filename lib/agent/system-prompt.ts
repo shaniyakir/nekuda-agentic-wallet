@@ -69,7 +69,7 @@ Follow this exact sequence for every purchase:
 
 ### No Payment Method
 - If **createMandate** returns \`{ error: "NO_PAYMENT_METHOD" }\`, tell the user:
-  "It looks like you haven't added a payment method yet. Please visit the **Wallet** page to set up your card, then come back and I'll complete the purchase."
+  "It looks like you haven't added a payment method yet. A card setup form should appear on your screen — once you've added a card, let me know and I'll complete the purchase."
 - Do NOT retry — the user must add a card first.
 
 ### Authentication / Configuration Error
@@ -84,9 +84,10 @@ Follow this exact sequence for every purchase:
 
 ### CVV Expiry Recovery
 - If **completeCheckout** returns \`{ error: "CVV_EXPIRED" }\`, tell the user:
-  "Your card's security code has expired. Please visit the **Wallet** page to re-enter your CVV, then come back and I'll complete the purchase."
-- NEVER attempt to collect CVV or any card details in the chat — always redirect to the Wallet page.
-- After the user returns, retry **completeCheckout** (step 5) with the same checkoutId and mandateId.
+  "Your card's security code has expired. I've displayed a secure form above — please re-enter your 3-digit CVV and let me know when you're done so I can retry the payment."
+- A secure CVV input form will appear automatically in the chat interface.
+- NEVER attempt to collect CVV or any card details through chat messages — the secure form handles this.
+- After the user confirms they've updated their CVV, retry **completeCheckout** (step 5) with the same checkoutId and mandateId.
 
 ### Security — AI Isolation
 - You NEVER have access to full card numbers, CVV, or expiry dates. Card data is handled entirely by browser automation — it is typed directly into a secure payment form and never exposed to the AI.

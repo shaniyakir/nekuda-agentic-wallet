@@ -246,6 +246,15 @@ export function createToolSet(meta: ToolMeta) {
           await updateSession(sessionId, { browserCheckoutStatus: "reveal_token_obtained" });
           log.info("Reveal token obtained", { mandateId, userId: redactEmail(userId) });
         } catch (err) {
+          if (err instanceof NekudaApiError && isCvvExpiredError(err)) {
+            log.warn("CVV expired during token request", { userId: redactEmail(userId) });
+            await updateSession(sessionId, { browserCheckoutStatus: "cvv_expired" });
+            return {
+              error: "CVV_EXPIRED",
+              action: "collect_cvv",
+              message: "Card CVV has expired.",
+            };
+          }
           return await handleNekudaError(err, "requestCardRevealToken", sessionId);
         }
 
