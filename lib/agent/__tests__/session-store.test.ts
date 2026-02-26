@@ -6,9 +6,6 @@ import {
   deleteSession,
   listSessions,
   getStoreSize,
-  storePaymentMethodId,
-  getPaymentMethodId,
-  clearPaymentMethodId,
 } from "@/lib/agent/session-store";
 
 describe("session-store", () => {
@@ -25,8 +22,7 @@ describe("session-store", () => {
     expect(session.userId).toBe(uid);
     expect(session.cartId).toBeNull();
     expect(session.mandateId).toBeNull();
-    expect(session.credentialsRevealed).toBe(false);
-    expect(session.credentialsRevealedAt).toBeNull();
+    expect(session.browserCheckoutStatus).toBeNull();
     expect(session.paymentStatus).toBeNull();
   });
 
@@ -80,12 +76,16 @@ describe("session-store", () => {
     expect(same.cartId).toBe("cart_active");
   });
 
-  it("clears PM vault when resetting terminal session", () => {
+  it("tracks browserCheckoutStatus through lifecycle", () => {
     getOrCreateSession(sid, uid);
-    storePaymentMethodId(sid, "pm_leftover");
-    updateSession(sid, { paymentStatus: "succeeded" });
-    getOrCreateSession(sid, uid);
-    expect(getPaymentMethodId(sid)).toBeNull();
+    updateSession(sid, { browserCheckoutStatus: "reveal_token_obtained" });
+    expect(getSession(sid)?.browserCheckoutStatus).toBe("reveal_token_obtained");
+
+    updateSession(sid, { browserCheckoutStatus: "browser_filling" });
+    expect(getSession(sid)?.browserCheckoutStatus).toBe("browser_filling");
+
+    updateSession(sid, { browserCheckoutStatus: "completed" });
+    expect(getSession(sid)?.browserCheckoutStatus).toBe("completed");
   });
 
   it("deletes a session", () => {
@@ -107,41 +107,12 @@ describe("session-store", () => {
     deleteSession(id1);
     deleteSession(id2);
   });
-});
 
-describe("payment-method-vault", () => {
-  const sid = `vault-${Date.now()}`;
-
-  it("stores and retrieves PaymentMethod ID", () => {
-    storePaymentMethodId(sid, "pm_test_123");
-    expect(getPaymentMethodId(sid)).toBe("pm_test_123");
-    clearPaymentMethodId(sid);
-  });
-
-  it("returns null for non-existent PM ID", () => {
-    expect(getPaymentMethodId("nonexistent")).toBeNull();
-  });
-
-  it("clears PM ID", () => {
-    storePaymentMethodId(sid, "pm_clear");
-    expect(getPaymentMethodId(sid)).not.toBeNull();
-    clearPaymentMethodId(sid);
-    expect(getPaymentMethodId(sid)).toBeNull();
-  });
-
-  it("PM ID is cleaned up when session is deleted", () => {
-    const deleteSid = `vault-delete-${Date.now()}`;
-    getOrCreateSession(deleteSid, "user@test.com");
-    storePaymentMethodId(deleteSid, "pm_delete");
-    expect(getPaymentMethodId(deleteSid)).not.toBeNull();
-    deleteSession(deleteSid);
-    expect(getPaymentMethodId(deleteSid)).toBeNull();
-  });
-
-  it("overwrites PM ID on re-store (credential refresh)", () => {
-    storePaymentMethodId(sid, "pm_old");
-    storePaymentMethodId(sid, "pm_new");
-    expect(getPaymentMethodId(sid)).toBe("pm_new");
-    clearPaymentMethodId(sid);
+  it("reports store size", () => {
+    const sizeBefore = getStoreSize();
+    const tempSid = `size-${Date.now()}`;
+    getOrCreateSession(tempSid, uid);
+    expect(getStoreSize()).toBe(sizeBefore + 1);
+    deleteSession(tempSid);
   });
 });

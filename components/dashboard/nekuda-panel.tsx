@@ -3,15 +3,21 @@
 import type { AgentSessionState } from "@/lib/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { KeyRound, CheckCircle2, XCircle, Clock } from "lucide-react";
+import { KeyRound, CheckCircle2, XCircle, Loader2 } from "lucide-react";
+
+const STATUS_LABELS: Record<string, string> = {
+  reveal_token_obtained: "Token obtained",
+  card_revealed: "Card revealed",
+  cvv_expired: "CVV expired",
+  billing_obtained: "Billing ready",
+  browser_filling: "Filling checkout…",
+  completed: "Completed",
+  failed: "Failed",
+};
 
 export function NekudaPanel({ state }: { state: AgentSessionState | null }) {
   const hasMandate = state?.mandateId != null;
-
-  const cvvAge = state?.credentialsRevealedAt
-    ? Math.round((Date.now() - new Date(state.credentialsRevealedAt).getTime()) / 60000)
-    : null;
-  const cvvExpiring = cvvAge != null && cvvAge >= 50;
+  const checkoutStatus = state?.browserCheckoutStatus;
 
   return (
     <Card>
@@ -45,28 +51,18 @@ export function NekudaPanel({ state }: { state: AgentSessionState | null }) {
               }
             />
             <Row
-              label="Reveal Token"
+              label="Browser Checkout"
               value={
-                state.revealTokenObtained ? (
+                checkoutStatus === "completed" ? (
                   <CheckCircle2 className="size-4 text-green-500" />
-                ) : (
-                  <XCircle className="size-4 text-muted-foreground" />
-                )
-              }
-            />
-            <Row
-              label="Credentials"
-              value={
-                state.credentialsRevealed ? (
-                  <div className="flex items-center gap-1">
-                    <CheckCircle2 className="size-4 text-green-500" />
-                    {cvvAge != null && (
-                      <span className={cvvExpiring ? "text-amber-600" : "text-muted-foreground"}>
-                        <Clock className="mr-0.5 inline size-3" />
-                        {cvvAge}m
-                      </span>
-                    )}
-                  </div>
+                ) : checkoutStatus === "failed" || checkoutStatus === "cvv_expired" ? (
+                  <XCircle className="size-4 text-red-500" />
+                ) : checkoutStatus === "browser_filling" ? (
+                  <Loader2 className="size-4 animate-spin text-blue-500" />
+                ) : checkoutStatus ? (
+                  <span className="text-muted-foreground">
+                    {STATUS_LABELS[checkoutStatus] ?? checkoutStatus}
+                  </span>
                 ) : (
                   <XCircle className="size-4 text-muted-foreground" />
                 )

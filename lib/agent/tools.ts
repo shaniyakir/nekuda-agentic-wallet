@@ -1,16 +1,15 @@
 /**
- * Agent tools — 7 tools for the full Browse → Buy → Pay lifecycle.
+ * Agent tools — 6 tools for the full Browse → Buy → Pay lifecycle.
  *
  * Merchant tools call repositories directly (same process, no HTTP).
  * Nekuda tools call @nekuda/nekuda-js for staged authorization.
  *
- * SECURITY (AI Isolation per Nekuda best practices):
- * - Raw card data (PAN, CVV, expiry) is NEVER stored or returned to the LLM.
- * - requestCardRevealToken reveals card details into ephemeral local variables,
- *   immediately tokenizes them via Stripe (POST /v1/tokens → PaymentMethod),
- *   and stores only the pm_xxx ID in a lightweight paymentMethodVault.
- * - executePayment reads the pre-created PM ID — no raw card data anywhere.
- * - The LLM only sees { success: true, last4: "XXXX" } after reveal.
+ * SECURITY (PCI-compliant browser-use architecture):
+ * - Card credentials are NEVER sent over HTTP from this server.
+ * - completeCheckout reveals card details via Nekuda, then types them
+ *   directly into a Stripe Elements iframe via headless browser automation.
+ * - Stripe tokenizes client-side (iframe → Stripe servers) — SAQ-A scope.
+ * - The LLM only sees { success, orderId, last4 } — never raw card data.
  *
  * Every tool returns a result string/object (never throws), so the LLM
  * can reason about errors and recover gracefully.
@@ -21,7 +20,6 @@ import { tool } from "ai";
 import { productRepo } from "@/lib/merchant/product-repo";
 import { cartRepo } from "@/lib/merchant/cart-repo";
 import { nekuda } from "@/lib/nekuda";
-import { stripe, createTokenizedPaymentMethod } from "@/lib/stripe";
 import {
   MandateData,
   NekudaApiError,
@@ -30,19 +28,15 @@ import {
   AuthenticationError,
   CardNotFoundError,
 } from "@nekuda/nekuda-js";
-import {
-  updateSession,
-  getSession,
-  storePaymentMethodId,
-  getPaymentMethodId,
-  clearPaymentMethodId,
-} from "@/lib/agent/session-store";
+import { updateSession } from "@/lib/agent/session-store";
 import { createLogger, redactEmail } from "@/lib/logger";
+import {
+  extractCardCredentials,
+  completeCheckoutViasBrowser,
+  closeBrowser,
+} from "@/lib/agent/browser";
 
 const log = createLogger("AGENT");
-
-/** Safety margin before 60-min CVV TTL (55 min) */
-const CREDENTIAL_TTL_MS = 55 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Helper: extract sessionId + userId from tool options
@@ -227,185 +221,124 @@ export function createToolSet(meta: ToolMeta) {
       },
     }),
 
-    requestCardRevealToken: tool({
+    // ------------------------------------------------------------------
+    // Browser-use checkout (replaces requestCardRevealToken + executePayment)
+    // ------------------------------------------------------------------
+
+    completeCheckout: tool({
       description:
-        "Step 2 of payment: Request a reveal token, reveal card details, and tokenize them into a Stripe PaymentMethod. Raw card data is never stored — only the tokenized PM ID is kept server-side. You will only see the last 4 digits. Requires a mandateId from createMandate.",
+        "Step 2 of payment: Complete the checkout using browser automation. Reveals card credentials via Nekuda, fills billing and card details into the checkout page's Stripe Elements iframe via headless browser, and submits payment. Card data never passes through HTTP — it flows directly browser → Stripe iframe → Stripe servers. Requires a mandateId from createMandate and a checkoutId from checkoutCart.",
       inputSchema: z.object({
+        checkoutId: z.string().describe("Checkout ID from checkoutCart"),
         mandateId: z
           .union([z.string(), z.number()])
           .describe("Mandate ID from createMandate"),
       }),
-      execute: async ({ mandateId }) => {
-        // Step 2a: Get reveal token (Nekuda API)
-        let tokenResult;
+      execute: async ({ checkoutId, mandateId }) => {
+        const user = nekuda.user(userId);
+
+        // 1. Request reveal token
+        let revealToken: string;
         try {
-          const user = nekuda.user(userId);
-          tokenResult = await user.requestCardRevealToken(String(mandateId));
-          updateSession(sessionId, { revealTokenObtained: true });
+          const tokenResult = await user.requestCardRevealToken(String(mandateId));
+          revealToken = tokenResult.revealToken;
+          updateSession(sessionId, { browserCheckoutStatus: "reveal_token_obtained" });
           log.info("Reveal token obtained", { mandateId, userId: redactEmail(userId) });
         } catch (err) {
           return handleNekudaError(err, "requestCardRevealToken", sessionId);
         }
 
-        // Step 2b: Reveal card details (Nekuda API — CVV expired can occur here)
-        let card;
+        // 2. Reveal card details (DPAN for Visa-tokenized cards)
+        let cardCredentials;
         try {
-          const user = nekuda.user(userId);
-          card = await user.revealCardDetails(tokenResult.revealToken);
+          const card = await user.revealCardDetails(revealToken);
+          const extracted = extractCardCredentials(card);
+          if ("error" in extracted) {
+            log.error("Incomplete card data from Nekuda", { error: extracted.error, userId: redactEmail(userId) });
+            updateSession(sessionId, { error: extracted.error });
+            return { error: "INCOMPLETE_CARD_DATA", message: extracted.error, retryable: true };
+          }
+          cardCredentials = { credentials: extracted, last4: card.last4Digits ?? "N/A" };
+          updateSession(sessionId, { browserCheckoutStatus: "card_revealed" });
+          log.info("Card credentials revealed", { last4: cardCredentials.last4, userId: redactEmail(userId) });
         } catch (err) {
           if (err instanceof NekudaApiError && isCvvExpiredError(err)) {
             log.warn("CVV expired during reveal", { userId: redactEmail(userId) });
-            updateSession(sessionId, { credentialsRevealed: false, credentialsRevealedAt: null });
+            updateSession(sessionId, { browserCheckoutStatus: "cvv_expired" });
             return {
               error: "CVV_EXPIRED",
               action: "collect_cvv",
-              message:
-                "Card CVV has expired. User must re-enter CVV on the wallet page before retrying.",
+              message: "Card CVV has expired. User must re-enter CVV on the wallet page before retrying.",
             };
           }
           return handleNekudaError(err, "revealCardDetails", sessionId);
         }
 
-        // Step 2c: Tokenize via Stripe publishable key (Stripe API)
+        // 3. Get billing details
+        let billing;
         try {
-          if (!card.cardNumber || !card.cardExpiryDate || !card.cardCvv) {
-            const missing = [
-              !card.cardNumber && "cardNumber",
-              !card.cardExpiryDate && "cardExpiryDate",
-              !card.cardCvv && "cardCvv",
-            ].filter(Boolean).join(", ");
-            log.error("Incomplete card data from Nekuda reveal", { missing, userId: redactEmail(userId) });
-            updateSession(sessionId, { error: "Incomplete card data received" });
-            return { error: "INCOMPLETE_CARD_DATA", message: `Missing: ${missing}`, retryable: true };
-          }
+          billing = await user.getBillingDetails();
+          updateSession(sessionId, { browserCheckoutStatus: "billing_obtained" });
+          log.info("Billing details obtained", { userId: redactEmail(userId) });
+        } catch (err) {
+          return handleNekudaError(err, "getBillingDetails", sessionId);
+        }
 
-          const [expMonth, expYear] = card.cardExpiryDate.split("/").map(Number);
-          if (!expMonth || !expYear) {
-            log.error("Invalid card expiry format", { userId: redactEmail(userId) });
-            updateSession(sessionId, { error: "Invalid card expiry format" });
-            return { error: "INVALID_EXPIRY", message: "Card expiry format unrecognized", retryable: true };
-          }
+        // 4. Run browser automation: navigate, fill, submit
+        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000";
+        try {
+          updateSession(sessionId, { browserCheckoutStatus: "browser_filling" });
 
-          const paymentMethod = await createTokenizedPaymentMethod({
-            number: card.cardNumber,
-            expMonth,
-            expYear: 2000 + expYear,
-            cvc: card.cardCvv,
+          const result = await completeCheckoutViasBrowser({
+            checkoutId,
+            billing,
+            email: userId,
+            card: cardCredentials.credentials,
+            baseUrl,
           });
 
-          storePaymentMethodId(sessionId, paymentMethod.id);
+          if (!result.success) {
+            log.error("Browser checkout failed", { error: result.error, checkoutId });
+            updateSession(sessionId, {
+              browserCheckoutStatus: "failed",
+              paymentStatus: "failed",
+              error: result.error ?? "Browser checkout failed",
+            });
+            return { error: result.error ?? "Payment failed during browser checkout", retryable: true };
+          }
 
-          const now = new Date().toISOString();
           updateSession(sessionId, {
-            credentialsRevealed: true,
-            credentialsRevealedAt: now,
+            browserCheckoutStatus: "completed",
+            orderId: result.orderId ?? checkoutId,
+            stripePaymentIntentId: result.stripePaymentIntentId ?? null,
+            paymentStatus: "succeeded",
           });
 
-          log.info("Card revealed, tokenized, and PM stored", {
+          log.info("Browser checkout succeeded", {
+            orderId: result.orderId,
+            amount: result.amount,
             userId: redactEmail(userId),
-            last4: card.last4Digits ?? "N/A",
-            paymentMethodId: paymentMethod.id,
           });
 
           return {
             success: true,
-            last4: card.last4Digits ?? null,
-            message: "Card tokenized and secured. Ready for payment.",
+            orderId: result.orderId ?? checkoutId,
+            stripePaymentIntentId: result.stripePaymentIntentId,
+            amount: result.amount,
+            last4: cardCredentials.last4,
+            status: "succeeded",
           };
         } catch (err) {
-          const message = err instanceof Error ? err.message : "Card tokenization failed";
-          log.error("Stripe tokenization failed", { error: message, userId: redactEmail(userId) });
-          updateSession(sessionId, { error: message });
-          return { error: "TOKENIZATION_FAILED", message, retryable: true };
-        }
-      },
-    }),
-
-    // ------------------------------------------------------------------
-    // Settlement
-    // ------------------------------------------------------------------
-
-    executePayment: tool({
-      description:
-        "Final step: Process payment via Stripe using the pre-tokenized PaymentMethod ID from the server-side vault. No card details needed — only provide the checkoutId.",
-      inputSchema: z.object({
-        checkoutId: z.string().describe("Checkout ID from checkoutCart"),
-      }),
-      execute: async ({ checkoutId }) => {
-        // 1. Check credential TTL
-        const session = getSession(sessionId);
-        if (session?.credentialsRevealedAt) {
-          const elapsed = Date.now() - new Date(session.credentialsRevealedAt).getTime();
-          if (elapsed > CREDENTIAL_TTL_MS) {
-            log.warn("Credential TTL exceeded", { sessionId, elapsedMin: Math.round(elapsed / 60000) });
-            clearPaymentMethodId(sessionId);
-            return {
-              error: "CREDENTIALS_EXPIRED",
-              message: "Credentials expired (CVV TTL exceeded). Call requestCardRevealToken again before retrying.",
-            };
-          }
-        }
-
-        // 2. Read PaymentMethod ID from vault (raw card data was never stored)
-        const paymentMethodId = getPaymentMethodId(sessionId);
-        if (!paymentMethodId) {
-          return { error: "No payment method found. Call requestCardRevealToken first." };
-        }
-
-        // 3. Look up cart + price integrity
-        const cart = cartRepo.get(checkoutId);
-        if (!cart) return { error: "Checkout not found" };
-        if (cart.status !== "checked_out") return { error: `Cart status is '${cart.status}', expected 'checked_out'` };
-
-        let serverTotal = 0;
-        for (const item of cart.items) {
-          const product = productRepo.getById(item.productId);
-          if (!product) return { error: `Product ${item.productId} no longer exists` };
-          serverTotal += product.price * item.quantity;
-        }
-        serverTotal = Math.round(serverTotal * 100) / 100;
-
-        try {
-          // 4. Create + confirm PaymentIntent with the pre-tokenized PM
-          const paymentIntent = await stripe.paymentIntents.create(
-            {
-              amount: Math.round(serverTotal * 100),
-              currency: "usd",
-              payment_method: paymentMethodId,
-              confirm: true,
-              automatic_payment_methods: { enabled: true, allow_redirects: "never" },
-              metadata: { checkoutId, cartId: cart.id, userId: redactEmail(userId) },
-            },
-            { idempotencyKey: `pay_${checkoutId}` }
-          );
-
-          // 5. Mark cart as paid + clear PM from vault
-          cartRepo.markPaid(checkoutId);
-          clearPaymentMethodId(sessionId);
-
+          const message = err instanceof Error ? err.message : "Browser checkout failed";
+          log.error("Browser automation error", { error: message, checkoutId });
           updateSession(sessionId, {
-            orderId: cart.id,
-            stripePaymentIntentId: paymentIntent.id,
-            paymentStatus: "succeeded",
+            browserCheckoutStatus: "failed",
+            paymentStatus: "failed",
+            error: message,
           });
-
-          log.info("Payment succeeded", {
-            paymentIntentId: paymentIntent.id,
-            amount: serverTotal,
-            userId: redactEmail(userId),
-          });
-
-          return {
-            orderId: cart.id,
-            stripePaymentIntentId: paymentIntent.id,
-            amount: `$${serverTotal.toFixed(2)}`,
-            status: paymentIntent.status,
-          };
-        } catch (err) {
-          const message = err instanceof Error ? err.message : "Payment failed";
-          log.error("Stripe payment failed", { error: message, checkoutId });
-          updateSession(sessionId, { paymentStatus: "failed", error: message });
-          return { error: message };
+          return { error: message, retryable: true };
+        } finally {
+          await closeBrowser();
         }
       },
     }),

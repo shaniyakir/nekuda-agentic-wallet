@@ -6,7 +6,12 @@ vi.mock("@/lib/nekuda", () => ({
 }));
 vi.mock("@/lib/stripe", () => ({
   stripe: { paymentIntents: { create: vi.fn() } },
-  createTokenizedPaymentMethod: vi.fn(),
+}));
+
+vi.mock("@/lib/agent/browser", () => ({
+  extractCardCredentials: vi.fn(),
+  completeCheckoutViasBrowser: vi.fn(),
+  closeBrowser: vi.fn(),
 }));
 
 import { createToolSet, browseProducts } from "@/lib/agent/tools";
@@ -14,7 +19,6 @@ import {
   getOrCreateSession,
   getSession,
   deleteSession,
-  storePaymentMethodId,
 } from "@/lib/agent/session-store";
 
 const toolOpts = { toolCallId: "test", messages: [] as never[], abortSignal: undefined as never };
@@ -171,37 +175,6 @@ describe("merchant tools", () => {
     });
   });
 
-  describe("executePayment — vault integration (no Stripe)", () => {
-    it("returns error when no PM ID in vault", async () => {
-      const cart = await exec(tools.createCart, {}, toolOpts);
-      await exec(tools.addToCart,
-        { cartId: cart.cartId, productId: "prod_001", quantity: 1 },
-        toolOpts
-      );
-      const checkout = await exec(tools.checkoutCart,
-        { cartId: cart.cartId },
-        toolOpts
-      );
-
-      const result = await exec(tools.executePayment,
-        { checkoutId: checkout.checkoutId },
-        toolOpts
-      );
-      expect(result).toHaveProperty("error");
-      expect(result.error).toContain("No payment method found");
-    });
-
-    it("returns error for non-existent checkout", async () => {
-      storePaymentMethodId(sid, "pm_test");
-
-      const result = await exec(tools.executePayment,
-        { checkoutId: "nonexistent" },
-        toolOpts
-      );
-      expect(result).toHaveProperty("error");
-      expect(result.error).toContain("Checkout not found");
-    });
-  });
 });
 
 describe("system prompt", () => {

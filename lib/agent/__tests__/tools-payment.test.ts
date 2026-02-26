@@ -8,12 +8,13 @@ import {
 } from "@nekuda/nekuda-js";
 
 // ---------------------------------------------------------------------------
-// Controllable mocks for Nekuda + Stripe
+// Controllable mocks for Nekuda
 // ---------------------------------------------------------------------------
 
 const mockCreateMandate = vi.fn();
 const mockRequestCardRevealToken = vi.fn();
 const mockRevealCardDetails = vi.fn();
+const mockGetBillingDetails = vi.fn();
 
 vi.mock("@/lib/nekuda", () => ({
   nekuda: {
@@ -21,18 +22,46 @@ vi.mock("@/lib/nekuda", () => ({
       createMandate: mockCreateMandate,
       requestCardRevealToken: mockRequestCardRevealToken,
       revealCardDetails: mockRevealCardDetails,
+      getBillingDetails: mockGetBillingDetails,
     }),
   },
 }));
 
-const mockCreateTokenizedPaymentMethod = vi.fn();
-const mockPaymentIntentsCreate = vi.fn();
+// ---------------------------------------------------------------------------
+// Mock Stripe (kept for createMandate tests that reference stripe module)
+// ---------------------------------------------------------------------------
 
 vi.mock("@/lib/stripe", () => ({
   stripe: {
-    paymentIntents: { create: (...args: unknown[]) => mockPaymentIntentsCreate(...args) },
+    paymentIntents: { create: vi.fn() },
   },
-  createTokenizedPaymentMethod: (...args: unknown[]) => mockCreateTokenizedPaymentMethod(...args),
+}));
+
+// ---------------------------------------------------------------------------
+// Mock browser automation
+// ---------------------------------------------------------------------------
+
+const mockCompleteCheckoutViasBrowser = vi.fn();
+const mockCloseBrowser = vi.fn();
+
+vi.mock("@/lib/agent/browser", () => ({
+  extractCardCredentials: vi.fn((card: any) => {
+    if (card.isVisaPayment && card.visaCredentials) {
+      const vc = card.visaCredentials;
+      if (!vc.cardNumber || !vc.expiryMonth || !vc.expiryYear || !vc.cvv) {
+        return { error: "Incomplete Visa credentials from Nekuda" };
+      }
+      return { number: vc.cardNumber, expiry: `${vc.expiryMonth}${vc.expiryYear}`, cvc: vc.cvv };
+    }
+    if (!card.cardNumber || !card.cardExpiryDate) {
+      const missing = [!card.cardNumber && "cardNumber", !card.cardExpiryDate && "cardExpiryDate"]
+        .filter(Boolean).join(", ");
+      return { error: `Incomplete card data from Nekuda: missing ${missing}` };
+    }
+    return { number: card.cardNumber, expiry: card.cardExpiryDate.replace("/", ""), cvc: card.cardCvv ?? "" };
+  }),
+  completeCheckoutViasBrowser: (...args: unknown[]) => mockCompleteCheckoutViasBrowser(...args),
+  closeBrowser: (...args: unknown[]) => mockCloseBrowser(...args),
 }));
 
 import { createToolSet } from "@/lib/agent/tools";
@@ -40,10 +69,6 @@ import {
   getOrCreateSession,
   getSession,
   deleteSession,
-  updateSession,
-  storePaymentMethodId,
-  getPaymentMethodId,
-  clearPaymentMethodId,
 } from "@/lib/agent/session-store";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -59,9 +84,19 @@ const MOCK_CARD = {
   cardCvv: "321",
   cardholderName: "Test User",
   last4Digits: "1111",
-  isVisaPayment: true,
+  isVisaPayment: false,
   billingAddress: null,
   zipCode: null,
+};
+
+const MOCK_BILLING = {
+  userId: "pay@test.com",
+  cardholderName: "Test User",
+  phoneNumber: "+15551234567",
+  billingAddress: "123 Main St",
+  zipCode: "94102",
+  city: "San Francisco",
+  state: "CA",
 };
 
 // ---------------------------------------------------------------------------
@@ -237,199 +272,11 @@ describe("createMandate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// requestCardRevealToken — now includes immediate tokenization
+// completeCheckout — browser-use payment flow
 // ---------------------------------------------------------------------------
 
-describe("requestCardRevealToken", () => {
-  const sid = `reveal-${Date.now()}`;
-  const uid = "reveal@test.com";
-  let tools: ReturnType<typeof createToolSet>;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    deleteSession(sid);
-    getOrCreateSession(sid, uid);
-    tools = createToolSet({ sessionId: sid, userId: uid });
-  });
-
-  it("reveals card, tokenizes immediately, stores only PM ID", async () => {
-    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
-    mockRevealCardDetails.mockResolvedValue(MOCK_CARD);
-    mockCreateTokenizedPaymentMethod.mockResolvedValue({ id: "pm_reveal_123" });
-
-    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
-
-    expect(result.success).toBe(true);
-    expect(result.last4).toBe("1111");
-    expect(result).not.toHaveProperty("cardNumber");
-    expect(result).not.toHaveProperty("cvv");
-
-    // Only PM ID stored, not raw card data
-    const pmId = getPaymentMethodId(sid);
-    expect(pmId).toBe("pm_reveal_123");
-
-    const session = getSession(sid);
-    expect(session?.credentialsRevealed).toBe(true);
-    expect(session?.credentialsRevealedAt).toBeTruthy();
-    expect(session?.revealTokenObtained).toBe(true);
-
-    clearPaymentMethodId(sid);
-  });
-
-  it("passes correct card details to tokenization helper", async () => {
-    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
-    mockRevealCardDetails.mockResolvedValue(MOCK_CARD);
-    mockCreateTokenizedPaymentMethod.mockResolvedValue({ id: "pm_verify" });
-
-    await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
-
-    expect(mockCreateTokenizedPaymentMethod).toHaveBeenCalledWith({
-      number: "4111111111111111",
-      expMonth: 12,
-      expYear: 2028,
-      cvc: "321",
-    });
-  });
-
-  it("returns INCOMPLETE_CARD_DATA when card number is missing", async () => {
-    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
-    mockRevealCardDetails.mockResolvedValue({
-      ...MOCK_CARD,
-      cardNumber: null,
-    });
-
-    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
-    expect(result.error).toBe("INCOMPLETE_CARD_DATA");
-    expect(result.message).toContain("cardNumber");
-    expect(result.retryable).toBe(true);
-    expect(mockCreateTokenizedPaymentMethod).not.toHaveBeenCalled();
-  });
-
-  it("returns INCOMPLETE_CARD_DATA when CVV is missing", async () => {
-    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
-    mockRevealCardDetails.mockResolvedValue({
-      ...MOCK_CARD,
-      cardCvv: null,
-    });
-
-    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
-    expect(result.error).toBe("INCOMPLETE_CARD_DATA");
-    expect(result.message).toContain("cardCvv");
-    expect(mockCreateTokenizedPaymentMethod).not.toHaveBeenCalled();
-  });
-
-  it("returns INCOMPLETE_CARD_DATA when expiry is missing", async () => {
-    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
-    mockRevealCardDetails.mockResolvedValue({
-      ...MOCK_CARD,
-      cardExpiryDate: null,
-    });
-
-    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
-    expect(result.error).toBe("INCOMPLETE_CARD_DATA");
-    expect(result.message).toContain("cardExpiryDate");
-    expect(mockCreateTokenizedPaymentMethod).not.toHaveBeenCalled();
-  });
-
-  it("returns INVALID_EXPIRY when expiry format is bad", async () => {
-    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
-    mockRevealCardDetails.mockResolvedValue({
-      ...MOCK_CARD,
-      cardExpiryDate: "invalid",
-    });
-
-    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
-    expect(result.error).toBe("INVALID_EXPIRY");
-    expect(mockCreateTokenizedPaymentMethod).not.toHaveBeenCalled();
-  });
-
-  it("returns error when tokenization fails", async () => {
-    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
-    mockRevealCardDetails.mockResolvedValue(MOCK_CARD);
-    mockCreateTokenizedPaymentMethod.mockRejectedValue(
-      new Error("Card tokenization failed")
-    );
-
-    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
-    expect(result.error).toBe("TOKENIZATION_FAILED");
-    expect(result.message).toContain("Card tokenization failed");
-    expect(result.retryable).toBe(true);
-  });
-
-  it("returns CVV_EXPIRED and clears session on CVV expired error", async () => {
-    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
-    mockRevealCardDetails.mockRejectedValue(
-      new NekudaApiError("Card CVV has expired", "cvv_expired", 400)
-    );
-
-    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
-
-    expect(result.error).toBe("CVV_EXPIRED");
-    expect(result.action).toBe("collect_cvv");
-    expect(result.message).toContain("wallet page");
-
-    const session = getSession(sid);
-    expect(session?.credentialsRevealed).toBe(false);
-    expect(session?.credentialsRevealedAt).toBeNull();
-  });
-
-  it("returns CVV_EXPIRED for invalid CVV variant", async () => {
-    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
-    mockRevealCardDetails.mockRejectedValue(
-      new NekudaApiError("CVV is invalid for this card", "invalid_cvv", 400)
-    );
-
-    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
-    expect(result.error).toBe("CVV_EXPIRED");
-  });
-
-  it("returns retryable error on token request 429", async () => {
-    mockRequestCardRevealToken.mockRejectedValue(
-      new NekudaApiError("Too many requests", "rate_limited", 429)
-    );
-
-    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
-    expect(result.error).toContain("Too many requests");
-    expect(result.retryable).toBe(true);
-  });
-
-  it("returns non-retryable error on 404 (mandate not found)", async () => {
-    mockRequestCardRevealToken.mockRejectedValue(
-      new NekudaApiError("Mandate not found", "not_found", 404)
-    );
-
-    const result = await exec(tools.requestCardRevealToken, { mandateId: 999 }, toolOpts);
-    expect(result.error).toContain("Mandate not found");
-    expect(result.retryable).toBe(false);
-  });
-
-  it("returns config error on AuthenticationError during reveal", async () => {
-    mockRequestCardRevealToken.mockRejectedValue(
-      new AuthenticationError("Unauthorized", "authentication_error", 401)
-    );
-
-    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
-    expect(result.error).toContain("configuration error");
-    expect(result.retryable).toBe(false);
-  });
-
-  it("returns retryable error on NekudaConnectionError during reveal", async () => {
-    mockRequestCardRevealToken.mockRejectedValue(
-      new NekudaConnectionError("ETIMEDOUT")
-    );
-
-    const result = await exec(tools.requestCardRevealToken, { mandateId: 42 }, toolOpts);
-    expect(result.error).toContain("Could not reach the payment service");
-    expect(result.retryable).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// executePayment — uses pre-tokenized PM ID from vault
-// ---------------------------------------------------------------------------
-
-describe("executePayment", () => {
-  const sid = `pay-${Date.now()}`;
+describe("completeCheckout", () => {
+  const sid = `checkout-${Date.now()}`;
   const uid = "pay@test.com";
   let tools: ReturnType<typeof createToolSet>;
 
@@ -447,124 +294,219 @@ describe("executePayment", () => {
     tools = createToolSet({ sessionId: sid, userId: uid });
   });
 
-  it("succeeds end-to-end: uses PM ID from vault, creates PaymentIntent", async () => {
+  it("completes full checkout via browser automation", async () => {
     const checkoutId = await setupCheckedOutCart();
-    storePaymentMethodId(sid, "pm_test_123");
-    updateSession(sid, { credentialsRevealedAt: new Date().toISOString() });
+    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
+    mockRevealCardDetails.mockResolvedValue(MOCK_CARD);
+    mockGetBillingDetails.mockResolvedValue(MOCK_BILLING);
+    mockCompleteCheckoutViasBrowser.mockResolvedValue({
+      success: true,
+      orderId: checkoutId,
+      stripePaymentIntentId: "pi_test_456",
+      amount: "$89.99",
+      status: "succeeded",
+    });
 
-    mockPaymentIntentsCreate.mockResolvedValue({ id: "pi_test_456", status: "succeeded" });
+    const result = await exec(tools.completeCheckout, { checkoutId, mandateId: 42 }, toolOpts);
 
-    const result = await exec(tools.executePayment, { checkoutId }, toolOpts);
-
+    expect(result.success).toBe(true);
     expect(result.orderId).toBe(checkoutId);
     expect(result.stripePaymentIntentId).toBe("pi_test_456");
-    expect(result.amount).toBe("$89.99");
+    expect(result.last4).toBe("1111");
     expect(result.status).toBe("succeeded");
+
+    // Card data never returned to LLM
+    expect(result).not.toHaveProperty("cardNumber");
+    expect(result).not.toHaveProperty("cvv");
+    expect(result).not.toHaveProperty("cvc");
 
     const session = getSession(sid);
+    expect(session?.browserCheckoutStatus).toBe("completed");
     expect(session?.paymentStatus).toBe("succeeded");
-    expect(session?.stripePaymentIntentId).toBe("pi_test_456");
-
-    // PM ID cleared after payment
-    expect(getPaymentMethodId(sid)).toBeNull();
-
-    // No tokenization call — PM was pre-created during reveal
-    expect(mockCreateTokenizedPaymentMethod).not.toHaveBeenCalled();
   });
 
-  it("returns CREDENTIALS_EXPIRED when TTL exceeded (56 min)", async () => {
+  it("passes card credentials and billing to browser automation", async () => {
     const checkoutId = await setupCheckedOutCart();
-    storePaymentMethodId(sid, "pm_expired");
+    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
+    mockRevealCardDetails.mockResolvedValue(MOCK_CARD);
+    mockGetBillingDetails.mockResolvedValue(MOCK_BILLING);
+    mockCompleteCheckoutViasBrowser.mockResolvedValue({ success: true, orderId: checkoutId });
 
-    const fiftysixMinAgo = new Date(Date.now() - 56 * 60 * 1000).toISOString();
-    updateSession(sid, { credentialsRevealedAt: fiftysixMinAgo });
+    await exec(tools.completeCheckout, { checkoutId, mandateId: 42 }, toolOpts);
 
-    const result = await exec(tools.executePayment, { checkoutId }, toolOpts);
-
-    expect(result.error).toBe("CREDENTIALS_EXPIRED");
-    expect(result.message).toContain("requestCardRevealToken");
-    expect(getPaymentMethodId(sid)).toBeNull();
+    expect(mockCompleteCheckoutViasBrowser).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checkoutId,
+        billing: MOCK_BILLING,
+        email: uid,
+        card: expect.objectContaining({
+          number: "4111111111111111",
+          cvc: "321",
+        }),
+      })
+    );
   });
 
-  it("allows payment within TTL window (54 min)", async () => {
+  it("returns INCOMPLETE_CARD_DATA when card number is missing", async () => {
     const checkoutId = await setupCheckedOutCart();
-    storePaymentMethodId(sid, "pm_ok");
+    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
+    mockRevealCardDetails.mockResolvedValue({ ...MOCK_CARD, cardNumber: null });
 
-    const fiftyFourMinAgo = new Date(Date.now() - 54 * 60 * 1000).toISOString();
-    updateSession(sid, { credentialsRevealedAt: fiftyFourMinAgo });
+    const result = await exec(tools.completeCheckout, { checkoutId, mandateId: 42 }, toolOpts);
 
-    mockPaymentIntentsCreate.mockResolvedValue({ id: "pi_ok", status: "succeeded" });
-
-    const result = await exec(tools.executePayment, { checkoutId }, toolOpts);
-    expect(result.status).toBe("succeeded");
+    expect(result.error).toBe("INCOMPLETE_CARD_DATA");
+    expect(result.message).toContain("cardNumber");
+    expect(result.retryable).toBe(true);
+    expect(mockCompleteCheckoutViasBrowser).not.toHaveBeenCalled();
   });
 
-  it("returns error when no PM ID in vault", async () => {
+  it("returns CVV_EXPIRED on CVV expired error from Nekuda", async () => {
     const checkoutId = await setupCheckedOutCart();
-    updateSession(sid, { credentialsRevealedAt: new Date().toISOString() });
+    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
+    mockRevealCardDetails.mockRejectedValue(
+      new NekudaApiError("Card CVV has expired", "cvv_expired", 400)
+    );
 
-    const result = await exec(tools.executePayment, { checkoutId }, toolOpts);
-    expect(result.error).toContain("No payment method found");
+    const result = await exec(tools.completeCheckout, { checkoutId, mandateId: 42 }, toolOpts);
+
+    expect(result.error).toBe("CVV_EXPIRED");
+    expect(result.action).toBe("collect_cvv");
+    expect(result.message).toContain("wallet page");
+
+    const session = getSession(sid);
+    expect(session?.browserCheckoutStatus).toBe("cvv_expired");
   });
 
-  it("returns error when Stripe declines the card", async () => {
+  it("returns error when browser checkout fails (e.g. card declined)", async () => {
     const checkoutId = await setupCheckedOutCart();
-    storePaymentMethodId(sid, "pm_decline");
-    updateSession(sid, { credentialsRevealedAt: new Date().toISOString() });
+    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
+    mockRevealCardDetails.mockResolvedValue(MOCK_CARD);
+    mockGetBillingDetails.mockResolvedValue(MOCK_BILLING);
+    mockCompleteCheckoutViasBrowser.mockResolvedValue({
+      success: false,
+      error: "Your card was declined.",
+    });
 
-    mockPaymentIntentsCreate.mockRejectedValue(new Error("Your card was declined."));
-
-    const result = await exec(tools.executePayment, { checkoutId }, toolOpts);
+    const result = await exec(tools.completeCheckout, { checkoutId, mandateId: 42 }, toolOpts);
 
     expect(result.error).toBe("Your card was declined.");
+    expect(result.retryable).toBe(true);
 
     const session = getSession(sid);
     expect(session?.paymentStatus).toBe("failed");
-    expect(session?.error).toBe("Your card was declined.");
+    expect(session?.browserCheckoutStatus).toBe("failed");
   });
 
-  it("returns error when Stripe reports insufficient funds", async () => {
+  it("returns retryable error when reveal token request fails with 429", async () => {
     const checkoutId = await setupCheckedOutCart();
-    storePaymentMethodId(sid, "pm_insuf");
-    updateSession(sid, { credentialsRevealedAt: new Date().toISOString() });
-
-    mockPaymentIntentsCreate.mockRejectedValue(
-      new Error("Your card has insufficient funds.")
+    mockRequestCardRevealToken.mockRejectedValue(
+      new NekudaApiError("Too many requests", "rate_limited", 429)
     );
 
-    const result = await exec(tools.executePayment, { checkoutId }, toolOpts);
-    expect(result.error).toBe("Your card has insufficient funds.");
-    expect(getSession(sid)?.paymentStatus).toBe("failed");
+    const result = await exec(tools.completeCheckout, { checkoutId, mandateId: 42 }, toolOpts);
+
+    expect(result.error).toContain("Too many requests");
+    expect(result.retryable).toBe(true);
+    expect(mockCompleteCheckoutViasBrowser).not.toHaveBeenCalled();
   });
 
-  it("returns error for cart that is already paid", async () => {
+  it("returns config error on AuthenticationError during token request", async () => {
     const checkoutId = await setupCheckedOutCart();
-    storePaymentMethodId(sid, "pm_first");
-    updateSession(sid, { credentialsRevealedAt: new Date().toISOString() });
+    mockRequestCardRevealToken.mockRejectedValue(
+      new AuthenticationError("Unauthorized", "authentication_error", 401)
+    );
 
-    mockPaymentIntentsCreate.mockResolvedValue({ id: "pi_first", status: "succeeded" });
-    await exec(tools.executePayment, { checkoutId }, toolOpts);
+    const result = await exec(tools.completeCheckout, { checkoutId, mandateId: 42 }, toolOpts);
 
-    // Second attempt
-    storePaymentMethodId(sid, "pm_second");
-    updateSession(sid, { credentialsRevealedAt: new Date().toISOString() });
-    const result = await exec(tools.executePayment, { checkoutId }, toolOpts);
-
-    expect(result.error).toContain("paid");
+    expect(result.error).toContain("configuration error");
+    expect(result.retryable).toBe(false);
   });
 
-  it("passes PM ID and correct amount to Stripe PaymentIntent", async () => {
+  it("returns retryable error on NekudaConnectionError during billing fetch", async () => {
     const checkoutId = await setupCheckedOutCart();
-    storePaymentMethodId(sid, "pm_verify");
-    updateSession(sid, { credentialsRevealedAt: new Date().toISOString() });
+    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
+    mockRevealCardDetails.mockResolvedValue(MOCK_CARD);
+    mockGetBillingDetails.mockRejectedValue(
+      new NekudaConnectionError("ETIMEDOUT")
+    );
 
-    mockPaymentIntentsCreate.mockResolvedValue({ id: "pi_verify", status: "succeeded" });
+    const result = await exec(tools.completeCheckout, { checkoutId, mandateId: 42 }, toolOpts);
 
-    await exec(tools.executePayment, { checkoutId }, toolOpts);
+    expect(result.error).toContain("Could not reach the payment service");
+    expect(result.retryable).toBe(true);
+    expect(mockCompleteCheckoutViasBrowser).not.toHaveBeenCalled();
+  });
 
-    const [intentArgs, opts] = mockPaymentIntentsCreate.mock.calls[0];
-    expect(intentArgs.payment_method).toBe("pm_verify");
-    expect(intentArgs.amount).toBe(8999); // $89.99 in cents
-    expect(opts.idempotencyKey).toBe(`pay_${checkoutId}`);
+  it("handles browser automation crash gracefully", async () => {
+    const checkoutId = await setupCheckedOutCart();
+    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
+    mockRevealCardDetails.mockResolvedValue(MOCK_CARD);
+    mockGetBillingDetails.mockResolvedValue(MOCK_BILLING);
+    mockCompleteCheckoutViasBrowser.mockRejectedValue(
+      new Error("Browser process terminated unexpectedly")
+    );
+
+    const result = await exec(tools.completeCheckout, { checkoutId, mandateId: 42 }, toolOpts);
+
+    expect(result.error).toContain("Browser process terminated unexpectedly");
+    expect(result.retryable).toBe(true);
+
+    const session = getSession(sid);
+    expect(session?.browserCheckoutStatus).toBe("failed");
+  });
+
+  it("always closes browser even on failure", async () => {
+    const checkoutId = await setupCheckedOutCart();
+    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
+    mockRevealCardDetails.mockResolvedValue(MOCK_CARD);
+    mockGetBillingDetails.mockResolvedValue(MOCK_BILLING);
+    mockCompleteCheckoutViasBrowser.mockRejectedValue(new Error("crash"));
+
+    await exec(tools.completeCheckout, { checkoutId, mandateId: 42 }, toolOpts);
+
+    expect(mockCloseBrowser).toHaveBeenCalled();
+  });
+
+  it("tracks browserCheckoutStatus through the lifecycle", async () => {
+    const checkoutId = await setupCheckedOutCart();
+    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
+    mockRevealCardDetails.mockResolvedValue(MOCK_CARD);
+    mockGetBillingDetails.mockResolvedValue(MOCK_BILLING);
+    mockCompleteCheckoutViasBrowser.mockResolvedValue({
+      success: true,
+      orderId: checkoutId,
+    });
+
+    await exec(tools.completeCheckout, { checkoutId, mandateId: 42 }, toolOpts);
+
+    const session = getSession(sid);
+    expect(session?.browserCheckoutStatus).toBe("completed");
+  });
+
+  it("prefers Visa DPAN credentials when available", async () => {
+    const checkoutId = await setupCheckedOutCart();
+    const visaCard = {
+      ...MOCK_CARD,
+      isVisaPayment: true,
+      visaCredentials: {
+        cardNumber: "4000000000003063",
+        expiryMonth: "08",
+        expiryYear: "28",
+        cvv: "456",
+      },
+    };
+
+    mockRequestCardRevealToken.mockResolvedValue({ revealToken: "tok_abc" });
+    mockRevealCardDetails.mockResolvedValue(visaCard);
+    mockGetBillingDetails.mockResolvedValue(MOCK_BILLING);
+    mockCompleteCheckoutViasBrowser.mockResolvedValue({ success: true, orderId: checkoutId });
+
+    await exec(tools.completeCheckout, { checkoutId, mandateId: 42 }, toolOpts);
+
+    expect(mockCompleteCheckoutViasBrowser).toHaveBeenCalledWith(
+      expect.objectContaining({
+        card: { number: "4000000000003063", expiry: "0828", cvc: "456" },
+      })
+    );
   });
 });

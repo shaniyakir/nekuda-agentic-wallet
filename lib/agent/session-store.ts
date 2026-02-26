@@ -4,9 +4,9 @@
  * Tracks agent state per session so the dashboard can poll for live updates.
  * Each tool call updates the relevant fields; the chat API reads/writes here.
  *
- * SECURITY: Only Stripe PaymentMethod IDs are stored (never raw PAN/CVV).
- * Raw card data is tokenized immediately during reveal and discarded.
- * The vault is never exposed to the LLM, dashboard, or Langfuse traces.
+ * SECURITY: No card data or Stripe PaymentMethod IDs are stored here.
+ * Card credentials are handled exclusively via browser automation — they flow
+ * from Nekuda API → headless browser → Stripe Elements iframe → Stripe servers.
  *
  * TTL eviction policy (lazy — checked on every get/set):
  *   - Completed sessions: evicted 30 min after completedAt
@@ -47,38 +47,9 @@ interface SessionEntry {
 
 const g = globalThis as unknown as {
   __sessionStore?: Map<string, SessionEntry>;
-  __paymentMethodVault?: Map<string, string>;
 };
 
 const store: Map<string, SessionEntry> = (g.__sessionStore ??= new Map());
-const paymentMethodVault: Map<string, string> = (g.__paymentMethodVault ??= new Map());
-
-/**
- * Store a Stripe PaymentMethod ID after tokenizing revealed card details.
- */
-export function storePaymentMethodId(
-  sessionId: string,
-  paymentMethodId: string
-): void {
-  paymentMethodVault.set(sessionId, paymentMethodId);
-  log.info("PaymentMethod stored in vault", { sessionId });
-}
-
-/**
- * Retrieve stored PaymentMethod ID for payment processing.
- */
-export function getPaymentMethodId(sessionId: string): string | null {
-  return paymentMethodVault.get(sessionId) ?? null;
-}
-
-/**
- * Clear PaymentMethod ID after payment or on session eviction.
- */
-export function clearPaymentMethodId(sessionId: string): void {
-  if (paymentMethodVault.delete(sessionId)) {
-    log.info("PaymentMethod ID cleared from vault", { sessionId });
-  }
-}
 
 /**
  * Create a fresh agent session state with sensible defaults.
@@ -96,9 +67,7 @@ export function createSessionState(
     checkoutId: null,
     mandateId: null,
     mandateStatus: null,
-    revealTokenObtained: false,
-    credentialsRevealed: false,
-    credentialsRevealedAt: null,
+    browserCheckoutStatus: null,
     orderId: null,
     stripePaymentIntentId: null,
     paymentStatus: null,
@@ -190,7 +159,6 @@ export function updateSession(
  */
 export function deleteSession(sessionId: string): boolean {
   const deleted = store.delete(sessionId);
-  paymentMethodVault.delete(sessionId);
   if (deleted) {
     log.info("Session deleted", { sessionId });
   }
@@ -227,7 +195,6 @@ function evictExpired(): void {
 
     if (shouldEvict) {
       store.delete(sessionId);
-      paymentMethodVault.delete(sessionId);
       evictedCount++;
     }
   }

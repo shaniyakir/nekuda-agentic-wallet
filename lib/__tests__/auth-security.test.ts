@@ -42,22 +42,21 @@ describe("auth — token secret enforcement", () => {
   });
 });
 
-describe("auth — PM vault log redaction", () => {
+describe("auth — session store does not leak sensitive data", () => {
   beforeEach(() => {
     vi.resetModules();
   });
 
-  it("storePaymentMethodId does not log the PM ID value", async () => {
+  it("session creation does not log the user email in plain text to console", async () => {
     const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    const { storePaymentMethodId, clearPaymentMethodId } = await import("@/lib/agent/session-store");
+    const { getOrCreateSession, deleteSession } = await import("@/lib/agent/session-store");
 
-    storePaymentMethodId("test-session", "pm_secret_value_123");
+    getOrCreateSession("test-session", "secret@example.com");
 
     const logOutput = consoleSpy.mock.calls.map((c) => c.join(" ")).join(" ");
-    expect(logOutput).not.toContain("pm_secret_value_123");
-    expect(logOutput).toContain("test-session");
+    expect(logOutput).not.toContain("secret@example.com");
 
-    clearPaymentMethodId("test-session");
+    deleteSession("test-session");
     consoleSpy.mockRestore();
   });
 });

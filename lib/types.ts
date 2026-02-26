@@ -92,17 +92,22 @@ export const AgentSessionStateSchema = z.object({
   // Nekuda staged authorization
   mandateId: z.number().nullable(),
   mandateStatus: z.enum(["pending", "approved", "failed"]).nullable(),
-  revealTokenObtained: z.boolean(),
-  credentialsRevealed: z.boolean(),
+
+  // Browser-use checkout progress
+  browserCheckoutStatus: z.enum([
+    "reveal_token_obtained",
+    "card_revealed",
+    "cvv_expired",
+    "billing_obtained",
+    "browser_filling",
+    "completed",
+    "failed",
+  ]).nullable(),
 
   // Settlement
   orderId: z.string().nullable(),
   stripePaymentIntentId: z.string().nullable(),
   paymentStatus: z.enum(["pending", "succeeded", "failed"]).nullable(),
-
-  // Credential TTL tracking
-  /** ISO timestamp when card details were last revealed. Used for CVV TTL enforcement (60-min window). */
-  credentialsRevealedAt: z.string().nullable(),
 
   // Error
   error: z.string().nullable(),
