@@ -1,23 +1,31 @@
 /**
- * In-memory Cart Repository.
+ * Redis-backed Cart Repository.
  *
  * Manages the shopping cart lifecycle: active -> checked_out -> paid.
  * Total is always recalculated from items (never trusted from external input).
+ *
+ * Persistence: Survives serverless cold starts via Upstash Redis.
+ * TTL: 2 hours (generous, covers full checkout flow).
  */
 
 import { randomUUID } from "crypto";
-import type { Cart, CartItem, CartStatus } from "@/lib/types";
+import type { Cart, CartItem } from "@/lib/types";
+import { redis } from "@/lib/redis";
 import { productRepo } from "./product-repo";
 
-const g = globalThis as unknown as { __cartStore?: Map<string, Cart> };
-const carts: Map<string, Cart> = (g.__cartStore ??= new Map());
+/** Cart TTL in seconds (2 hours) */
+const CART_TTL_SEC = 2 * 60 * 60;
+
+function cartKey(cartId: string): string {
+  return `cart:${cartId}`;
+}
 
 function recalcTotal(items: CartItem[]): number {
   return items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
 }
 
 export const cartRepo = {
-  create(userId: string): Cart {
+  async create(userId: string): Promise<Cart> {
     const cart: Cart = {
       id: randomUUID(),
       userId,
@@ -25,20 +33,21 @@ export const cartRepo = {
       status: "active",
       total: 0,
     };
-    carts.set(cart.id, cart);
+    await redis.set(cartKey(cart.id), cart, { ex: CART_TTL_SEC });
     return cart;
   },
 
-  get(id: string): Cart | undefined {
-    return carts.get(id);
+  async get(id: string): Promise<Cart | undefined> {
+    const cart = await redis.get<Cart>(cartKey(id));
+    return cart ?? undefined;
   },
 
-  addItem(
+  async addItem(
     cartId: string,
     productId: string,
     quantity: number = 1
-  ): Cart | { error: string } {
-    const cart = carts.get(cartId);
+  ): Promise<Cart | { error: string }> {
+    const cart = await redis.get<Cart>(cartKey(cartId));
     if (!cart) return { error: "Cart not found" };
     if (cart.status !== "active") return { error: "Cart is not active" };
 
@@ -60,6 +69,7 @@ export const cartRepo = {
     }
 
     cart.total = recalcTotal(cart.items);
+    await redis.set(cartKey(cartId), cart, { ex: CART_TTL_SEC });
     return cart;
   },
 
@@ -67,8 +77,8 @@ export const cartRepo = {
    * Freeze the cart for checkout. Returns the cart with status "checked_out".
    * The cart.id doubles as the checkoutId.
    */
-  checkout(cartId: string): Cart | { error: string } {
-    const cart = carts.get(cartId);
+  async checkout(cartId: string): Promise<Cart | { error: string }> {
+    const cart = await redis.get<Cart>(cartKey(cartId));
     if (!cart) return { error: "Cart not found" };
     if (cart.status !== "active") return { error: "Cart is already checked out or paid" };
     if (cart.items.length === 0) return { error: "Cart is empty" };
@@ -78,20 +88,21 @@ export const cartRepo = {
     for (const item of cart.items) {
       const product = productRepo.getById(item.productId);
       if (!product) return { error: `Product ${item.productId} no longer exists` };
-      item.unitPrice = product.price; // Refresh price from source of truth
+      item.unitPrice = product.price;
       total += product.price * item.quantity;
     }
 
     cart.total = total;
     cart.status = "checked_out";
+    await redis.set(cartKey(cartId), cart, { ex: CART_TTL_SEC });
     return cart;
   },
 
   /**
    * Mark as paid and decrement stock.
    */
-  markPaid(cartId: string): Cart | { error: string } {
-    const cart = carts.get(cartId);
+  async markPaid(cartId: string): Promise<Cart | { error: string }> {
+    const cart = await redis.get<Cart>(cartKey(cartId));
     if (!cart) return { error: "Cart not found" };
     if (cart.status !== "checked_out") return { error: "Cart must be checked_out first" };
 
@@ -102,18 +113,19 @@ export const cartRepo = {
     }
 
     cart.status = "paid";
+    await redis.set(cartKey(cartId), cart, { ex: CART_TTL_SEC });
     return cart;
   },
 
   /**
    * Reduce quantity of a specific item. Removes the item if quantity hits 0.
    */
-  reduceItem(
+  async reduceItem(
     cartId: string,
     productId: string,
     amount: number = 1
-  ): Cart | { error: string } {
-    const cart = carts.get(cartId);
+  ): Promise<Cart | { error: string }> {
+    const cart = await redis.get<Cart>(cartKey(cartId));
     if (!cart) return { error: "Cart not found" };
     if (cart.status !== "active") return { error: "Cart is not active" };
 
@@ -126,14 +138,15 @@ export const cartRepo = {
     }
 
     cart.total = recalcTotal(cart.items);
+    await redis.set(cartKey(cartId), cart, { ex: CART_TTL_SEC });
     return cart;
   },
 
   /**
    * Remove an entire line item from the cart.
    */
-  removeItem(cartId: string, productId: string): Cart | { error: string } {
-    const cart = carts.get(cartId);
+  async removeItem(cartId: string, productId: string): Promise<Cart | { error: string }> {
+    const cart = await redis.get<Cart>(cartKey(cartId));
     if (!cart) return { error: "Cart not found" };
     if (cart.status !== "active") return { error: "Cart is not active" };
 
@@ -142,19 +155,21 @@ export const cartRepo = {
 
     cart.items.splice(idx, 1);
     cart.total = recalcTotal(cart.items);
+    await redis.set(cartKey(cartId), cart, { ex: CART_TTL_SEC });
     return cart;
   },
 
   /**
    * Clear all items from the cart.
    */
-  clear(cartId: string): Cart | { error: string } {
-    const cart = carts.get(cartId);
+  async clear(cartId: string): Promise<Cart | { error: string }> {
+    const cart = await redis.get<Cart>(cartKey(cartId));
     if (!cart) return { error: "Cart not found" };
     if (cart.status !== "active") return { error: "Cart is not active" };
 
     cart.items = [];
     cart.total = 0;
+    await redis.set(cartKey(cartId), cart, { ex: CART_TTL_SEC });
     return cart;
   },
 };

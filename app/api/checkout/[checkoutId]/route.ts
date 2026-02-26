@@ -29,7 +29,7 @@ export async function GET(
     );
   }
 
-  const cart = cartRepo.get(checkoutId);
+  const cart = await cartRepo.get(checkoutId);
 
   if (!cart) {
     return NextResponse.json({ error: "Cart not found" }, { status: 404 });

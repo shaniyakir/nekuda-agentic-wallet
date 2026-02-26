@@ -55,7 +55,7 @@ export async function POST(
     return NextResponse.json({ error: message }, { status: 400 });
   }
 
-  const cart = cartRepo.get(checkoutId);
+  const cart = await cartRepo.get(checkoutId);
   if (!cart) {
     return NextResponse.json({ error: "Checkout not found" }, { status: 404 });
   }
@@ -100,7 +100,7 @@ export async function POST(
       { idempotencyKey: `pay_${checkoutId}` }
     );
 
-    cartRepo.markPaid(checkoutId);
+    await cartRepo.markPaid(checkoutId);
 
     log.info("Checkout payment succeeded", {
       paymentIntentId: paymentIntent.id,

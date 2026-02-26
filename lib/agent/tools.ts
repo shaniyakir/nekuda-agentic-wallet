@@ -81,8 +81,8 @@ export function createToolSet(meta: ToolMeta) {
         "Create a new shopping cart for the current user. Must be called before adding items.",
       inputSchema: z.object({}),
       execute: async () => {
-        const cart = cartRepo.create(userId);
-        updateSession(sessionId, {
+        const cart = await cartRepo.create(userId);
+        await updateSession(sessionId, {
           cartId: cart.id,
           cartStatus: "active",
           cartTotal: 0,
@@ -101,12 +101,12 @@ export function createToolSet(meta: ToolMeta) {
         quantity: z.number().int().positive().default(1),
       }),
       execute: async ({ cartId, productId, quantity }) => {
-        const result = cartRepo.addItem(cartId, productId, quantity);
+        const result = await cartRepo.addItem(cartId, productId, quantity);
         if ("error" in result) {
           log.warn("addToCart failed", { error: result.error, cartId, productId });
           return { error: result.error };
         }
-        updateSession(sessionId, {
+        await updateSession(sessionId, {
           cartStatus: "active",
           cartTotal: result.total,
         });
@@ -126,9 +126,9 @@ export function createToolSet(meta: ToolMeta) {
         productId: z.string(),
       }),
       execute: async ({ cartId, productId }) => {
-        const result = cartRepo.removeItem(cartId, productId);
+        const result = await cartRepo.removeItem(cartId, productId);
         if ("error" in result) return { error: result.error };
-        updateSession(sessionId, { cartTotal: result.total });
+        await updateSession(sessionId, { cartTotal: result.total });
         log.info("Item removed from cart", { cartId, productId });
         return { cartId: result.id, items: result.items, total: `$${result.total.toFixed(2)}` };
       },
@@ -141,12 +141,12 @@ export function createToolSet(meta: ToolMeta) {
         cartId: z.string().describe("Cart ID to checkout"),
       }),
       execute: async ({ cartId }) => {
-        const result = cartRepo.checkout(cartId);
+        const result = await cartRepo.checkout(cartId);
         if ("error" in result) {
           log.warn("checkoutCart failed", { error: result.error, cartId });
           return { error: result.error };
         }
-        updateSession(sessionId, {
+        await updateSession(sessionId, {
           checkoutId: result.id,
           cartStatus: "checked_out",
           cartTotal: result.total,
@@ -172,7 +172,7 @@ export function createToolSet(meta: ToolMeta) {
         checkoutId: z.string().describe("Checkout ID from checkoutCart"),
       }),
       execute: async ({ checkoutId }) => {
-        const cart = cartRepo.get(checkoutId);
+        const cart = await cartRepo.get(checkoutId);
         if (!cart) return { error: "Checkout not found. Call checkoutCart first." };
         if (cart.status !== "checked_out") return { error: `Cart status is '${cart.status}', expected 'checked_out'` };
 
@@ -196,7 +196,7 @@ export function createToolSet(meta: ToolMeta) {
             mode: "sandbox",
           });
           const result = await user.createMandate(mandateData);
-          updateSession(sessionId, {
+          await updateSession(sessionId, {
             mandateId: result.mandateId,
             mandateStatus: "approved",
           });
@@ -210,14 +210,14 @@ export function createToolSet(meta: ToolMeta) {
         } catch (err) {
           if (isNoPaymentMethodError(err)) {
             log.warn("No payment method configured", { userId: redactEmail(userId) });
-            updateSession(sessionId, { mandateStatus: "failed", error: "No payment method configured" });
+            await updateSession(sessionId, { mandateStatus: "failed", error: "No payment method configured" });
             return {
               error: "NO_PAYMENT_METHOD",
               message: "No payment method is set up yet. Please visit the Wallet page to add a card before making a purchase.",
               retryable: false,
             };
           }
-          return handleNekudaError(err, "createMandate", sessionId);
+          return await handleNekudaError(err, "createMandate", sessionId);
         }
       },
     }),
@@ -243,10 +243,10 @@ export function createToolSet(meta: ToolMeta) {
         try {
           const tokenResult = await user.requestCardRevealToken(String(mandateId));
           revealToken = tokenResult.revealToken;
-          updateSession(sessionId, { browserCheckoutStatus: "reveal_token_obtained" });
+          await updateSession(sessionId, { browserCheckoutStatus: "reveal_token_obtained" });
           log.info("Reveal token obtained", { mandateId, userId: redactEmail(userId) });
         } catch (err) {
-          return handleNekudaError(err, "requestCardRevealToken", sessionId);
+          return await handleNekudaError(err, "requestCardRevealToken", sessionId);
         }
 
         // 2. Reveal card details (DPAN for Visa-tokenized cards)
@@ -256,39 +256,39 @@ export function createToolSet(meta: ToolMeta) {
           const extracted = extractCardCredentials(card);
           if ("error" in extracted) {
             log.error("Incomplete card data from Nekuda", { error: extracted.error, userId: redactEmail(userId) });
-            updateSession(sessionId, { error: extracted.error });
+            await updateSession(sessionId, { error: extracted.error });
             return { error: "INCOMPLETE_CARD_DATA", message: extracted.error, retryable: true };
           }
           cardCredentials = { credentials: extracted, last4: card.last4Digits ?? "N/A" };
-          updateSession(sessionId, { browserCheckoutStatus: "card_revealed" });
+          await updateSession(sessionId, { browserCheckoutStatus: "card_revealed" });
           log.info("Card credentials revealed", { last4: cardCredentials.last4, userId: redactEmail(userId) });
         } catch (err) {
           if (err instanceof NekudaApiError && isCvvExpiredError(err)) {
             log.warn("CVV expired during reveal", { userId: redactEmail(userId) });
-            updateSession(sessionId, { browserCheckoutStatus: "cvv_expired" });
+            await updateSession(sessionId, { browserCheckoutStatus: "cvv_expired" });
             return {
               error: "CVV_EXPIRED",
               action: "collect_cvv",
               message: "Card CVV has expired. User must re-enter CVV on the wallet page before retrying.",
             };
           }
-          return handleNekudaError(err, "revealCardDetails", sessionId);
+          return await handleNekudaError(err, "revealCardDetails", sessionId);
         }
 
         // 3. Get billing details
         let billing;
         try {
           billing = await user.getBillingDetails();
-          updateSession(sessionId, { browserCheckoutStatus: "billing_obtained" });
+          await updateSession(sessionId, { browserCheckoutStatus: "billing_obtained" });
           log.info("Billing details obtained", { userId: redactEmail(userId) });
         } catch (err) {
-          return handleNekudaError(err, "getBillingDetails", sessionId);
+          return await handleNekudaError(err, "getBillingDetails", sessionId);
         }
 
         // 4. Run browser automation: navigate, fill, submit
         const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000";
         try {
-          updateSession(sessionId, { browserCheckoutStatus: "browser_filling" });
+          await updateSession(sessionId, { browserCheckoutStatus: "browser_filling" });
 
           const checkoutToken = generateCheckoutToken(checkoutId);
           const result = await completeCheckoutViasBrowser({
@@ -302,7 +302,7 @@ export function createToolSet(meta: ToolMeta) {
 
           if (!result.success) {
             log.error("Browser checkout failed", { error: result.error, checkoutId });
-            updateSession(sessionId, {
+            await updateSession(sessionId, {
               browserCheckoutStatus: "failed",
               paymentStatus: "failed",
               error: result.error ?? "Browser checkout failed",
@@ -314,7 +314,7 @@ export function createToolSet(meta: ToolMeta) {
             };
           }
 
-          updateSession(sessionId, {
+          await updateSession(sessionId, {
             browserCheckoutStatus: "completed",
             orderId: result.orderId ?? checkoutId,
             stripePaymentIntentId: result.stripePaymentIntentId ?? null,
@@ -338,7 +338,7 @@ export function createToolSet(meta: ToolMeta) {
         } catch (err) {
           const message = err instanceof Error ? err.message : "Browser checkout failed";
           log.error("Browser automation error", { error: message, checkoutId });
-          updateSession(sessionId, {
+          await updateSession(sessionId, {
             browserCheckoutStatus: "failed",
             paymentStatus: "failed",
             error: message,
@@ -377,18 +377,18 @@ function isCvvExpiredError(err: NekudaApiError): boolean {
   );
 }
 
-function handleNekudaError(
+async function handleNekudaError(
   err: unknown,
   toolName: string,
   sessionId: string
-): { error: string; retryable: boolean } {
+): Promise<{ error: string; retryable: boolean }> {
   if (err instanceof CardNotFoundError) {
     log.error(`${toolName} card not found`, {
       code: err.code,
       status: err.statusCode,
       userId: err.userId,
     });
-    updateSession(sessionId, { error: "Card not found" });
+    await updateSession(sessionId, { error: "Card not found" });
     return { error: "Card not found. Please add a payment method on the Wallet page.", retryable: false };
   }
 
@@ -397,7 +397,7 @@ function handleNekudaError(
       code: err.code,
       status: err.statusCode,
     });
-    updateSession(sessionId, { error: "Payment service authentication failed" });
+    await updateSession(sessionId, { error: "Payment service authentication failed" });
     return {
       error: "Payment service configuration error. Please contact support.",
       retryable: false,
@@ -418,7 +418,7 @@ function handleNekudaError(
     log.error(`${toolName} Nekuda validation error (possible SDK/API mismatch)`, {
       message: err.message,
     });
-    updateSession(sessionId, { error: err.message });
+    await updateSession(sessionId, { error: err.message });
     return { error: err.message, retryable: false };
   }
 
@@ -430,13 +430,13 @@ function handleNekudaError(
       message: err.message,
     });
     if (!retryable) {
-      updateSession(sessionId, { error: err.message });
+      await updateSession(sessionId, { error: err.message });
     }
     return { error: err.message, retryable };
   }
 
   const message = err instanceof Error ? err.message : "Unknown error";
   log.error(`${toolName} unexpected error`, { error: message });
-  updateSession(sessionId, { error: message });
+  await updateSession(sessionId, { error: message });
   return { error: message, retryable: false };
 }

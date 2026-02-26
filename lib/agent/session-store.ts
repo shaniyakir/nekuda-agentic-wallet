@@ -1,5 +1,5 @@
 /**
- * Agent Session Store — in-memory session tracking with TTL eviction.
+ * Agent Session Store — Redis-backed session tracking with native TTL.
  *
  * Tracks agent state per session so the dashboard can poll for live updates.
  * Each tool call updates the relevant fields; the chat API reads/writes here.
@@ -8,27 +8,28 @@
  * Card credentials are handled exclusively via browser automation — they flow
  * from Nekuda API → headless browser → Stripe Elements iframe → Stripe servers.
  *
- * TTL eviction policy (lazy — checked on every get/set):
- *   - Completed sessions: evicted 30 min after completedAt
- *   - Abandoned sessions:  evicted 60 min after createdAt (never completed)
+ * TTL policy (managed by Redis):
+ *   - New/active sessions: 60 min TTL
+ *   - Completed sessions: TTL reduced to 30 min on terminal status
  *
- * Production upgrade: Replace with Redis for multi-instance deployments.
+ * Persistence: Survives serverless cold starts via Upstash Redis.
  */
 
 import type { AgentSessionState } from "@/lib/types";
+import { redis } from "@/lib/redis";
 import { createLogger, redactEmail } from "@/lib/logger";
 
 const log = createLogger("SESSION");
 
 // ---------------------------------------------------------------------------
-// TTL configuration
+// TTL configuration (in seconds for Redis)
 // ---------------------------------------------------------------------------
 
-/** How long to keep a completed session (30 min) */
-const COMPLETED_TTL_MS = 30 * 60 * 1000;
+/** How long to keep an active/abandoned session (60 min) */
+const ACTIVE_TTL_SEC = 60 * 60;
 
-/** How long to keep an abandoned session (60 min) */
-const ABANDONED_TTL_MS = 60 * 60 * 1000;
+/** How long to keep a completed session (30 min) */
+const COMPLETED_TTL_SEC = 30 * 60;
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -41,15 +42,16 @@ interface SessionEntry {
 }
 
 // ---------------------------------------------------------------------------
-// globalThis-backed stores — survive Next.js dev-mode HMR recompilation.
-// Without this, different route modules can get separate Map instances.
+// Redis key helpers
 // ---------------------------------------------------------------------------
 
-const g = globalThis as unknown as {
-  __sessionStore?: Map<string, SessionEntry>;
-};
+function sessionKey(sessionId: string): string {
+  return `session:${sessionId}`;
+}
 
-const store: Map<string, SessionEntry> = (g.__sessionStore ??= new Map());
+// ---------------------------------------------------------------------------
+// Public API (all async)
+// ---------------------------------------------------------------------------
 
 /**
  * Create a fresh agent session state with sensible defaults.
@@ -77,11 +79,10 @@ export function createSessionState(
 }
 
 /**
- * Get a session by ID. Returns null if not found or evicted.
+ * Get a session by ID. Returns null if not found.
  */
-export function getSession(sessionId: string): AgentSessionState | null {
-  evictExpired();
-  const entry = store.get(sessionId);
+export async function getSession(sessionId: string): Promise<AgentSessionState | null> {
+  const entry = await redis.get<SessionEntry>(sessionKey(sessionId));
   if (!entry) return null;
   return entry.state;
 }
@@ -93,26 +94,27 @@ const TERMINAL_PAYMENT_STATUSES = new Set(["succeeded", "failed"]);
  * Terminal sessions (succeeded/failed) are automatically cleared so the
  * next chat interaction starts fresh.
  */
-export function getOrCreateSession(
+export async function getOrCreateSession(
   sessionId: string,
   userId: string
-): AgentSessionState {
-  const existing = getSession(sessionId);
+): Promise<AgentSessionState> {
+  const existing = await getSession(sessionId);
   if (existing) {
     if (!TERMINAL_PAYMENT_STATUSES.has(existing.paymentStatus ?? "")) {
       return existing;
     }
     log.info("Clearing terminal session", { sessionId, status: existing.paymentStatus });
-    deleteSession(sessionId);
+    await deleteSession(sessionId);
   }
 
   const state = createSessionState(sessionId, userId);
-  store.set(sessionId, {
+  const entry: SessionEntry = {
     state,
     createdAt: Date.now(),
     completedAt: null,
-  });
+  };
 
+  await redis.set(sessionKey(sessionId), entry, { ex: ACTIVE_TTL_SEC });
   log.info("Session created", { sessionId, userId: redactEmail(userId) });
   return state;
 }
@@ -121,12 +123,12 @@ export function getOrCreateSession(
  * Update specific fields of a session's state.
  * Returns the updated state, or null if the session doesn't exist.
  */
-export function updateSession(
+export async function updateSession(
   sessionId: string,
   updates: Partial<AgentSessionState>
-): AgentSessionState | null {
-  evictExpired();
-  const entry = store.get(sessionId);
+): Promise<AgentSessionState | null> {
+  const key = sessionKey(sessionId);
+  const entry = await redis.get<SessionEntry>(key);
   if (!entry) {
     log.warn("Attempted to update non-existent session", { sessionId });
     return null;
@@ -137,72 +139,60 @@ export function updateSession(
     updatedAt: new Date().toISOString(),
   });
 
-  // Track completion
+  // Track completion and adjust TTL
   const terminalStatuses = ["succeeded", "failed"];
+  let ttl = ACTIVE_TTL_SEC;
+
   if (
     entry.state.paymentStatus &&
     terminalStatuses.includes(entry.state.paymentStatus) &&
     !entry.completedAt
   ) {
     entry.completedAt = Date.now();
+    ttl = COMPLETED_TTL_SEC;
     log.info("Session completed", {
       sessionId,
       paymentStatus: entry.state.paymentStatus,
     });
+  } else if (entry.completedAt) {
+    ttl = COMPLETED_TTL_SEC;
   }
 
+  await redis.set(key, entry, { ex: ttl });
   return entry.state;
 }
 
 /**
  * Delete a session explicitly.
  */
-export function deleteSession(sessionId: string): boolean {
-  const deleted = store.delete(sessionId);
-  if (deleted) {
+export async function deleteSession(sessionId: string): Promise<boolean> {
+  const deleted = await redis.del(sessionKey(sessionId));
+  if (deleted > 0) {
     log.info("Session deleted", { sessionId });
+    return true;
   }
-  return deleted;
+  return false;
 }
 
 /**
- * List all active (non-evicted) sessions. Used by admin/debug endpoints.
+ * List all active sessions. Used by admin/debug endpoints.
+ * Note: This scans Redis keys — use sparingly in production.
  */
-export function listSessions(): AgentSessionState[] {
-  evictExpired();
-  return Array.from(store.values()).map((entry) => entry.state);
+export async function listSessions(): Promise<AgentSessionState[]> {
+  const keys = await redis.keys("session:*");
+  if (keys.length === 0) return [];
+
+  const entries = await redis.mget<SessionEntry[]>(...keys);
+  return entries
+    .filter((entry): entry is SessionEntry => entry !== null)
+    .map((entry) => entry.state);
 }
 
 /**
- * Get the current store size (for monitoring).
+ * Get the approximate store size (for monitoring).
+ * Note: This counts Redis keys — use sparingly in production.
  */
-export function getStoreSize(): number {
-  return store.size;
-}
-
-// ---------------------------------------------------------------------------
-// TTL eviction (lazy — runs on every get/set)
-// ---------------------------------------------------------------------------
-
-function evictExpired(): void {
-  const now = Date.now();
-  let evictedCount = 0;
-
-  for (const [sessionId, entry] of store) {
-    const shouldEvict = entry.completedAt
-      ? now - entry.completedAt > COMPLETED_TTL_MS // Completed: 30 min after completion
-      : now - entry.createdAt > ABANDONED_TTL_MS; // Abandoned: 60 min after creation
-
-    if (shouldEvict) {
-      store.delete(sessionId);
-      evictedCount++;
-    }
-  }
-
-  if (evictedCount > 0) {
-    log.info("Evicted expired sessions", {
-      evictedCount,
-      remaining: store.size,
-    });
-  }
+export async function getStoreSize(): Promise<number> {
+  const keys = await redis.keys("session:*");
+  return keys.length;
 }

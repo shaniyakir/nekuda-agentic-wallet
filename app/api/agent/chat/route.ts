@@ -71,8 +71,8 @@ export async function POST(request: Request) {
     );
   }
 
-  // 4. Ensure agent session exists for dashboard tracking
-  getOrCreateSession(sessionId, userId);
+  // 4. Ensure agent session exists for dashboard tracking (Redis-backed)
+  await getOrCreateSession(sessionId, userId);
 
   // 5. Create session-scoped tools
   const tools = createToolSet({ sessionId, userId });

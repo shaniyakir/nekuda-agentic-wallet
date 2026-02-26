@@ -15,6 +15,6 @@ export async function POST(request: NextRequest) {
   }
 
   // Ignore body userId — use authenticated identity
-  const cart = cartRepo.create(session.userId);
+  const cart = await cartRepo.create(session.userId);
   return NextResponse.json(cart, { status: 201 });
 }

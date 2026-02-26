@@ -1,5 +1,37 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
+// ---------------------------------------------------------------------------
+// Mock Redis (before any imports that use it)
+// ---------------------------------------------------------------------------
+
+const mockStore = new Map<string, unknown>();
+
+vi.mock("@upstash/redis", () => ({
+  Redis: {
+    fromEnv: vi.fn(() => ({
+      get: vi.fn((key: string) => Promise.resolve(mockStore.get(key) ?? null)),
+      set: vi.fn((key: string, value: unknown) => {
+        mockStore.set(key, value);
+        return Promise.resolve("OK");
+      }),
+      del: vi.fn((key: string) => {
+        const existed = mockStore.has(key);
+        mockStore.delete(key);
+        return Promise.resolve(existed ? 1 : 0);
+      }),
+      keys: vi.fn((pattern: string) => {
+        const prefix = pattern.replace("*", "");
+        return Promise.resolve(
+          Array.from(mockStore.keys()).filter((k) => k.startsWith(prefix))
+        );
+      }),
+      mget: vi.fn((...keys: string[]) =>
+        Promise.resolve(keys.map((k) => mockStore.get(k) ?? null))
+      ),
+    })),
+  },
+}));
+
 // Mock external services before importing tools
 vi.mock("@/lib/nekuda", () => ({
   nekuda: { user: () => ({}) },
@@ -33,9 +65,10 @@ describe("merchant tools", () => {
   const uid = "merchant-tools@test.com";
   let tools: ReturnType<typeof createToolSet>;
 
-  beforeEach(() => {
-    deleteSession(sid);
-    getOrCreateSession(sid, uid);
+  beforeEach(async () => {
+    mockStore.clear();
+    await deleteSession(sid);
+    await getOrCreateSession(sid, uid);
     tools = createToolSet({ sessionId: sid, userId: uid });
   });
 
@@ -69,7 +102,7 @@ describe("merchant tools", () => {
       expect(result).toHaveProperty("cartId");
       expect(result.status).toBe("active");
 
-      const session = getSession(sid);
+      const session = await getSession(sid);
       expect(session?.cartId).toBe(result.cartId);
       expect(session?.cartStatus).toBe("active");
     });
@@ -88,7 +121,7 @@ describe("merchant tools", () => {
       expect(result.items).toHaveLength(1);
       expect(result.items[0].quantity).toBe(2);
 
-      const session = getSession(sid);
+      const session = await getSession(sid);
       expect(session?.cartTotal).toBe(179.98);
     });
 
@@ -149,7 +182,7 @@ describe("merchant tools", () => {
       expect(result.status).toBe("checked_out");
       expect(result.total).toBe("$39.99");
 
-      const session = getSession(sid);
+      const session = await getSession(sid);
       expect(session?.checkoutId).toBe(cart.cartId);
       expect(session?.cartStatus).toBe("checked_out");
     });

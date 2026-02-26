@@ -21,7 +21,7 @@ export async function POST(
 
   const { id: cartId } = await params;
 
-  const cart = cartRepo.get(cartId);
+  const cart = await cartRepo.get(cartId);
   if (!cart) {
     return NextResponse.json({ error: "Cart not found" }, { status: 404 });
   }
@@ -39,7 +39,7 @@ export async function POST(
     );
   }
 
-  const result = cartRepo.addItem(cartId, parsed.data.productId, parsed.data.quantity);
+  const result = await cartRepo.addItem(cartId, parsed.data.productId, parsed.data.quantity);
 
   if ("error" in result) {
     return NextResponse.json({ error: result.error }, { status: 400 });

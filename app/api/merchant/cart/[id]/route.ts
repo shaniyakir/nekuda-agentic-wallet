@@ -18,7 +18,7 @@ export async function GET(
   }
 
   const { id } = await params;
-  const cart = cartRepo.get(id);
+  const cart = await cartRepo.get(id);
 
   if (!cart) {
     return NextResponse.json({ error: "Cart not found" }, { status: 404 });

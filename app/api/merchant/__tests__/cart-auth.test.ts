@@ -15,14 +15,14 @@ vi.mock("@/lib/merchant/cart-repo", () => {
   const carts = new Map<string, { id: string; userId: string; items: unknown[]; status: string; total: number }>();
   return {
     cartRepo: {
-      create: (userId: string) => {
+      create: async (userId: string) => {
         const cart = { id: "cart_test", userId, items: [], status: "active", total: 0 };
         carts.set(cart.id, cart);
         return cart;
       },
-      get: (id: string) => carts.get(id) ?? undefined,
-      addItem: (_cartId: string, _productId: string, _qty: number) => ({ id: "cart_test", items: [], total: 0 }),
-      checkout: (_cartId: string) => ({ id: "cart_test", items: [], total: 0, status: "checked_out" }),
+      get: async (id: string) => carts.get(id) ?? undefined,
+      addItem: async (_cartId: string, _productId: string, _qty: number) => ({ id: "cart_test", items: [], total: 0 }),
+      checkout: async (_cartId: string) => ({ id: "cart_test", items: [], total: 0, status: "checked_out" }),
     },
   };
 });

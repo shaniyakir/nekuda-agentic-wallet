@@ -8,6 +8,38 @@ import {
 } from "@nekuda/nekuda-js";
 
 // ---------------------------------------------------------------------------
+// Mock Redis (before any imports that use it)
+// ---------------------------------------------------------------------------
+
+const mockStore = new Map<string, unknown>();
+
+vi.mock("@upstash/redis", () => ({
+  Redis: {
+    fromEnv: vi.fn(() => ({
+      get: vi.fn((key: string) => Promise.resolve(mockStore.get(key) ?? null)),
+      set: vi.fn((key: string, value: unknown) => {
+        mockStore.set(key, value);
+        return Promise.resolve("OK");
+      }),
+      del: vi.fn((key: string) => {
+        const existed = mockStore.has(key);
+        mockStore.delete(key);
+        return Promise.resolve(existed ? 1 : 0);
+      }),
+      keys: vi.fn((pattern: string) => {
+        const prefix = pattern.replace("*", "");
+        return Promise.resolve(
+          Array.from(mockStore.keys()).filter((k) => k.startsWith(prefix))
+        );
+      }),
+      mget: vi.fn((...keys: string[]) =>
+        Promise.resolve(keys.map((k) => mockStore.get(k) ?? null))
+      ),
+    })),
+  },
+}));
+
+// ---------------------------------------------------------------------------
 // Controllable mocks for Nekuda
 // ---------------------------------------------------------------------------
 
@@ -125,10 +157,11 @@ describe("createMandate", () => {
     return checkout.checkoutId as string;
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
-    deleteSession(sid);
-    getOrCreateSession(sid, uid);
+    mockStore.clear();
+    await deleteSession(sid);
+    await getOrCreateSession(sid, uid);
     tools = createToolSet({ sessionId: sid, userId: uid });
   });
 
@@ -142,7 +175,7 @@ describe("createMandate", () => {
     expect(result.amount).toBe("$89.99");
     expect(result.requestId).toBe("req_abc");
 
-    const session = getSession(sid);
+    const session = await getSession(sid);
     expect(session?.mandateId).toBe(42);
     expect(session?.mandateStatus).toBe("approved");
   });
@@ -182,7 +215,7 @@ describe("createMandate", () => {
     expect(result.message).toContain("Wallet");
     expect(result.retryable).toBe(false);
 
-    const session = getSession(sid);
+    const session = await getSession(sid);
     expect(session?.mandateStatus).toBe("failed");
   });
 
@@ -228,7 +261,7 @@ describe("createMandate", () => {
     expect(result.error).toContain("Invalid mandate data");
     expect(result.retryable).toBe(false);
 
-    const session = getSession(sid);
+    const session = await getSession(sid);
     expect(session?.error).toContain("Invalid mandate data");
   });
 
@@ -242,7 +275,7 @@ describe("createMandate", () => {
     expect(result.error).toContain("configuration error");
     expect(result.retryable).toBe(false);
 
-    const session = getSession(sid);
+    const session = await getSession(sid);
     expect(session?.error).toBe("Payment service authentication failed");
   });
 
@@ -267,7 +300,7 @@ describe("createMandate", () => {
     expect(result.error).toContain("price must be positive");
     expect(result.retryable).toBe(false);
 
-    const session = getSession(sid);
+    const session = await getSession(sid);
     expect(session?.error).toContain("price must be positive");
   });
 
@@ -297,10 +330,11 @@ describe("completeCheckout", () => {
     return checkout.checkoutId as string;
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
-    deleteSession(sid);
-    getOrCreateSession(sid, uid);
+    mockStore.clear();
+    await deleteSession(sid);
+    await getOrCreateSession(sid, uid);
     tools = createToolSet({ sessionId: sid, userId: uid });
   });
 
@@ -330,7 +364,7 @@ describe("completeCheckout", () => {
     expect(result).not.toHaveProperty("cvv");
     expect(result).not.toHaveProperty("cvc");
 
-    const session = getSession(sid);
+    const session = await getSession(sid);
     expect(session?.browserCheckoutStatus).toBe("completed");
     expect(session?.paymentStatus).toBe("succeeded");
   });
@@ -383,7 +417,7 @@ describe("completeCheckout", () => {
     expect(result.action).toBe("collect_cvv");
     expect(result.message).toContain("wallet page");
 
-    const session = getSession(sid);
+    const session = await getSession(sid);
     expect(session?.browserCheckoutStatus).toBe("cvv_expired");
   });
 
@@ -402,7 +436,7 @@ describe("completeCheckout", () => {
     expect(result.error).toBe("Your card was declined.");
     expect(result.retryable).toBe(true);
 
-    const session = getSession(sid);
+    const session = await getSession(sid);
     expect(session?.paymentStatus).toBe("failed");
     expect(session?.browserCheckoutStatus).toBe("failed");
   });
@@ -461,7 +495,7 @@ describe("completeCheckout", () => {
     expect(result.error).toContain("Browser process terminated unexpectedly");
     expect(result.retryable).toBe(true);
 
-    const session = getSession(sid);
+    const session = await getSession(sid);
     expect(session?.browserCheckoutStatus).toBe("failed");
   });
 
@@ -489,7 +523,7 @@ describe("completeCheckout", () => {
 
     await exec(tools.completeCheckout, { checkoutId, mandateId: 42 }, toolOpts);
 
-    const session = getSession(sid);
+    const session = await getSession(sid);
     expect(session?.browserCheckoutStatus).toBe("completed");
   });
 

@@ -20,7 +20,7 @@ export async function GET(
 
   const { sessionId } = await params;
 
-  const state = getSession(sessionId);
+  const state = await getSession(sessionId);
   if (!state) {
     return NextResponse.json(
       { error: "Session not found" },
