@@ -64,6 +64,16 @@ vi.mock("@/lib/agent/browser", () => ({
   closeBrowser: (...args: unknown[]) => mockCloseBrowser(...args),
 }));
 
+// ---------------------------------------------------------------------------
+// Mock checkout token (requires SESSION_SECRET which isn't set in test env)
+// ---------------------------------------------------------------------------
+
+vi.mock("@/lib/agent/checkout-token", () => ({
+  generateCheckoutToken: vi.fn().mockReturnValue("mock-checkout-token"),
+  verifyCheckoutToken: vi.fn().mockReturnValue(true),
+  CHECKOUT_TOKEN_COOKIE: "checkout_token",
+}));
+
 import { createToolSet } from "@/lib/agent/tools";
 import {
   getOrCreateSession,

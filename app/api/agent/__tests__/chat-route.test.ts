@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // ---------------------------------------------------------------------------
 
 const mockGetSession = vi.fn();
-const mockRateLimiterCheck = vi.fn();
+const mockRateLimiterLimit = vi.fn();
 const mockStreamText = vi.fn();
 const mockGetOrCreateSession = vi.fn();
 
@@ -14,7 +14,10 @@ vi.mock("@/lib/auth", () => ({
 }));
 
 vi.mock("@/lib/rate-limit", () => ({
-  agentRateLimiter: { check: (key: string) => mockRateLimiterCheck(key) },
+  agentRateLimiter: { limit: (key: string) => mockRateLimiterLimit(key) },
+  getRetryAfterSeconds: (result: { success: boolean; reset: number }) =>
+    result.success ? 0 : Math.ceil((result.reset - Date.now()) / 1000),
+  logRateLimitExceeded: vi.fn(),
 }));
 
 vi.mock("ai", () => ({
@@ -109,20 +112,22 @@ describe("POST /api/agent/chat", () => {
 
   it("returns 429 when rate limited", async () => {
     mockGetSession.mockResolvedValue({ userId: "u@test.com" });
-    mockRateLimiterCheck.mockReturnValue({
-      allowed: false,
-      retryAfterSeconds: 42,
+    const resetTime = Date.now() + 42_000;
+    mockRateLimiterLimit.mockResolvedValue({
+      success: false,
+      reset: resetTime,
       remaining: 0,
+      limit: 10,
     });
 
     const res = await POST(makeRequest({ messages: [{ role: "user", content: "hi" }] }));
     expect(res.status).toBe(429);
-    expect(res.headers.get("Retry-After")).toBe("42");
+    expect(Number(res.headers.get("Retry-After"))).toBeGreaterThanOrEqual(40);
   });
 
   it("returns 400 for invalid JSON body", async () => {
     mockGetSession.mockResolvedValue({ userId: "u@test.com" });
-    mockRateLimiterCheck.mockReturnValue({ allowed: true, retryAfterSeconds: 0, remaining: 9 });
+    mockRateLimiterLimit.mockResolvedValue({ success: true, reset: Date.now() + 60_000, remaining: 9, limit: 10 });
 
     const badReq = new Request("http://localhost:3000/api/agent/chat", {
       method: "POST",
@@ -136,7 +141,7 @@ describe("POST /api/agent/chat", () => {
 
   it("returns 400 for empty messages array", async () => {
     mockGetSession.mockResolvedValue({ userId: "u@test.com" });
-    mockRateLimiterCheck.mockReturnValue({ allowed: true, retryAfterSeconds: 0, remaining: 9 });
+    mockRateLimiterLimit.mockResolvedValue({ success: true, reset: Date.now() + 60_000, remaining: 9, limit: 10 });
 
     const res = await POST(makeRequest({ messages: [] }));
     expect(res.status).toBe(400);
@@ -146,7 +151,7 @@ describe("POST /api/agent/chat", () => {
 
   it("creates session and streams response for valid request", async () => {
     mockGetSession.mockResolvedValue({ userId: "u@test.com" });
-    mockRateLimiterCheck.mockReturnValue({ allowed: true, retryAfterSeconds: 0, remaining: 8 });
+    mockRateLimiterLimit.mockResolvedValue({ success: true, reset: Date.now() + 60_000, remaining: 8, limit: 10 });
 
     const res = await POST(
       makeRequest({
@@ -168,7 +173,7 @@ describe("POST /api/agent/chat", () => {
 
   it("generates a sessionId when none provided", async () => {
     mockGetSession.mockResolvedValue({ userId: "u@test.com" });
-    mockRateLimiterCheck.mockReturnValue({ allowed: true, retryAfterSeconds: 0, remaining: 8 });
+    mockRateLimiterLimit.mockResolvedValue({ success: true, reset: Date.now() + 60_000, remaining: 8, limit: 10 });
 
     await POST(
       makeRequest({
@@ -183,7 +188,7 @@ describe("POST /api/agent/chat", () => {
 
   it("passes session-scoped tools to streamText", async () => {
     mockGetSession.mockResolvedValue({ userId: "u@test.com" });
-    mockRateLimiterCheck.mockReturnValue({ allowed: true, retryAfterSeconds: 0, remaining: 8 });
+    mockRateLimiterLimit.mockResolvedValue({ success: true, reset: Date.now() + 60_000, remaining: 8, limit: 10 });
 
     await POST(
       makeRequest({
@@ -201,7 +206,7 @@ describe("POST /api/agent/chat", () => {
 
   it("uses rate limiter keyed by userId", async () => {
     mockGetSession.mockResolvedValue({ userId: "specific@user.com" });
-    mockRateLimiterCheck.mockReturnValue({ allowed: true, retryAfterSeconds: 0, remaining: 8 });
+    mockRateLimiterLimit.mockResolvedValue({ success: true, reset: Date.now() + 60_000, remaining: 8, limit: 10 });
 
     await POST(
       makeRequest({
@@ -209,6 +214,6 @@ describe("POST /api/agent/chat", () => {
       })
     );
 
-    expect(mockRateLimiterCheck).toHaveBeenCalledWith("specific@user.com");
+    expect(mockRateLimiterLimit).toHaveBeenCalledWith("specific@user.com");
   });
 });

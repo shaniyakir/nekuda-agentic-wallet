@@ -1,98 +1,56 @@
 /**
- * In-memory sliding-window rate limiter.
+ * Redis-backed sliding-window rate limiter using @upstash/ratelimit.
  *
  * Keyed by userId (not IP) since userId is the meaningful identity
  * in our encrypted-session architecture.
  *
- * Returns standard 429 info with Retry-After seconds.
+ * Persists across serverless cold starts via Upstash Redis.
  *
  * Usage:
- *   const limiter = createRateLimiter({ windowMs: 60_000, maxRequests: 10 });
- *   const result = limiter.check(userId);
- *   if (!result.allowed) → respond with 429, Retry-After: result.retryAfterSeconds
+ *   const result = await agentRateLimiter.limit(userId);
+ *   if (!result.success) → respond with 429, Retry-After calculated from reset
  */
 
+import { Ratelimit } from "@upstash/ratelimit";
+import { redis } from "@/lib/redis";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger("RATE_LIMIT");
 
-interface RateLimiterConfig {
-  /** Time window in milliseconds */
-  windowMs: number;
-  /** Max requests allowed within the window */
-  maxRequests: number;
-}
+/**
+ * Agent rate limiter: 10 requests per 60 seconds per userId.
+ * Uses sliding window algorithm for smooth rate limiting.
+ */
+export const agentRateLimiter = new Ratelimit({
+  redis,
+  limiter: Ratelimit.slidingWindow(10, "60 s"),
+  prefix: "ratelimit:agent",
+  analytics: true,
+});
 
-interface RateLimitResult {
-  allowed: boolean;
-  /** Seconds until the oldest request in the window expires (only set when !allowed) */
-  retryAfterSeconds: number;
-  /** How many requests remain in the current window */
-  remaining: number;
-}
+/**
+ * Result type returned by agentRateLimiter.limit().
+ * Re-exported for convenience.
+ */
+export type RateLimitResult = Awaited<ReturnType<typeof agentRateLimiter.limit>>;
 
-interface RateLimiter {
-  check(key: string): RateLimitResult;
-  /** Reset a specific key (useful for testing) */
-  reset(key: string): void;
+/**
+ * Helper to calculate Retry-After seconds from a rate limit result.
+ */
+export function getRetryAfterSeconds(result: RateLimitResult): number {
+  if (result.success) return 0;
+  const now = Date.now();
+  const retryAfterMs = result.reset - now;
+  return Math.max(Math.ceil(retryAfterMs / 1000), 1);
 }
 
 /**
- * Create a sliding-window rate limiter.
- * Stores timestamps of recent requests per key and prunes expired entries on each check.
+ * Log a rate limit event (call after limit() for blocked requests).
  */
-export function createRateLimiter(config: RateLimiterConfig): RateLimiter {
-  const { windowMs, maxRequests } = config;
-  const store = new Map<string, number[]>();
-
-  function prune(key: string, now: number): number[] {
-    const timestamps = store.get(key) ?? [];
-    const cutoff = now - windowMs;
-    const valid = timestamps.filter((t) => t > cutoff);
-    store.set(key, valid);
-    return valid;
-  }
-
-  return {
-    check(key: string): RateLimitResult {
-      const now = Date.now();
-      const timestamps = prune(key, now);
-
-      if (timestamps.length >= maxRequests) {
-        const oldestInWindow = timestamps[0];
-        const retryAfterMs = oldestInWindow + windowMs - now;
-        const retryAfterSeconds = Math.ceil(retryAfterMs / 1000);
-
-        log.warn("Rate limit exceeded", { key, count: timestamps.length });
-
-        return {
-          allowed: false,
-          retryAfterSeconds: Math.max(retryAfterSeconds, 1),
-          remaining: 0,
-        };
-      }
-
-      timestamps.push(now);
-      store.set(key, timestamps);
-
-      return {
-        allowed: true,
-        retryAfterSeconds: 0,
-        remaining: maxRequests - timestamps.length,
-      };
-    },
-
-    reset(key: string): void {
-      store.delete(key);
-    },
-  };
+export function logRateLimitExceeded(key: string, result: RateLimitResult): void {
+  log.warn("Rate limit exceeded", {
+    key,
+    remaining: result.remaining,
+    resetAt: new Date(result.reset).toISOString(),
+  });
 }
-
-// ---------------------------------------------------------------------------
-// Default agent rate limiter instance (10 requests / 60 seconds per userId)
-// ---------------------------------------------------------------------------
-
-export const agentRateLimiter = createRateLimiter({
-  windowMs: 60_000,
-  maxRequests: 10,
-});

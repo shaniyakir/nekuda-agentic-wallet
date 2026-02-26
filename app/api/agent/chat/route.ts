@@ -19,7 +19,7 @@ import {
 import { openai } from "@ai-sdk/openai";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
-import { agentRateLimiter } from "@/lib/rate-limit";
+import { agentRateLimiter, getRetryAfterSeconds, logRateLimitExceeded } from "@/lib/rate-limit";
 import { createToolSet } from "@/lib/agent/tools";
 import { SYSTEM_PROMPT } from "@/lib/agent/system-prompt";
 import { getOrCreateSession } from "@/lib/agent/session-store";
@@ -39,12 +39,13 @@ export async function POST(request: Request) {
 
   const userId = session.userId;
 
-  // 2. Rate limit — per userId
-  const rateResult = agentRateLimiter.check(userId);
-  if (!rateResult.allowed) {
+  // 2. Rate limit — per userId (Redis-backed, survives cold starts)
+  const rateResult = await agentRateLimiter.limit(userId);
+  if (!rateResult.success) {
+    logRateLimitExceeded(userId, rateResult);
     return NextResponse.json(
       { error: "Rate limit exceeded. Please wait before sending another message." },
-      { status: 429, headers: { "Retry-After": String(rateResult.retryAfterSeconds) } }
+      { status: 429, headers: { "Retry-After": String(getRetryAfterSeconds(rateResult)) } }
     );
   }
 
