@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { hashSessionId } from "@/lib/logger";
+import { hashUserIdForStorage } from "@/lib/agent/session-store";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -12,9 +13,13 @@ vi.mock("@/lib/auth", () => ({
   getSession: () => mockGetAuthSession(),
 }));
 
-vi.mock("@/lib/agent/session-store", () => ({
-  getSession: (id: string) => mockGetSession(id),
-}));
+vi.mock("@/lib/agent/session-store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/agent/session-store")>();
+  return {
+    ...actual,
+    getSession: (id: string) => mockGetSession(id),
+  };
+});
 
 import { GET } from "@/app/api/agent/state/[sessionId]/route";
 
@@ -81,7 +86,7 @@ describe("GET /api/agent/state/[sessionId]", () => {
     mockGetAuthSession.mockResolvedValue({ userId: TEST_EMAIL });
     mockGetSession.mockReturnValue({
       sessionId: TEST_SESSION_ID,
-      userId: "other@user.com",
+      userId: hashUserIdForStorage("other@user.com"),
       cartId: null,
     });
 
@@ -92,7 +97,7 @@ describe("GET /api/agent/state/[sessionId]", () => {
   it("returns session state when authorized", async () => {
     const sessionState = {
       sessionId: TEST_SESSION_ID,
-      userId: TEST_EMAIL,
+      userId: hashUserIdForStorage(TEST_EMAIL),
       cartId: "cart_123",
       cartStatus: "active",
       cartTotal: 89.99,
@@ -115,7 +120,7 @@ describe("GET /api/agent/state/[sessionId]", () => {
 
     const body = await res.json();
     expect(body.sessionId).toBe(TEST_SESSION_ID);
-    expect(body.userId).toBe(TEST_EMAIL);
+    expect(body.userId).toBe(hashUserIdForStorage(TEST_EMAIL));
     expect(body.cartId).toBe("cart_123");
     expect(body.cartTotal).toBe(89.99);
   });

@@ -7,7 +7,7 @@
 
 import { NextResponse } from "next/server";
 import { getSession as getAuthSession } from "@/lib/auth";
-import { getSession } from "@/lib/agent/session-store";
+import { getSession, hashUserIdForStorage } from "@/lib/agent/session-store";
 
 export async function GET(
   _request: Request,
@@ -28,7 +28,7 @@ export async function GET(
     );
   }
 
-  if (state.userId !== auth.userId) {
+  if (state.userId !== hashUserIdForStorage(auth.userId)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 

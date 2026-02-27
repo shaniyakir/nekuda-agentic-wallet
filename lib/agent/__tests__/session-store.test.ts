@@ -38,6 +38,7 @@ import {
   deleteSession,
   listSessions,
   getStoreSize,
+  hashUserIdForStorage,
 } from "@/lib/agent/session-store";
 
 describe("session-store", () => {
@@ -51,7 +52,7 @@ describe("session-store", () => {
   it("creates a session with correct defaults", async () => {
     const session = await getOrCreateSession(sid, uid);
     expect(session.sessionId).toBe(sid);
-    expect(session.userId).toBe(uid);
+    expect(session.userId).toBe(hashUserIdForStorage(uid));
     expect(session.cartId).toBeNull();
     expect(session.mandateId).toBeNull();
     expect(session.browserCheckoutStatus).toBeNull();
@@ -70,7 +71,7 @@ describe("session-store", () => {
     const updated = await updateSession(sid, { cartId: "cart_123", cartStatus: "active" });
     expect(updated?.cartId).toBe("cart_123");
     expect(updated?.cartStatus).toBe("active");
-    expect(updated?.userId).toBe(uid);
+    expect(updated?.userId).toBe(hashUserIdForStorage(uid));
   });
 
   it("returns null when updating non-existent session", async () => {

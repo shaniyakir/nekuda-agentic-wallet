@@ -9,6 +9,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { AddToCartRequestSchema } from "@/lib/types";
 import { cartRepo } from "@/lib/merchant/cart-repo";
 import { getSession } from "@/lib/auth";
+import { hashUserIdForStorage } from "@/lib/agent/session-store";
 
 export async function POST(
   request: NextRequest,
@@ -25,7 +26,7 @@ export async function POST(
   if (!cart) {
     return NextResponse.json({ error: "Cart not found" }, { status: 404 });
   }
-  if (cart.userId !== session.userId) {
+  if (cart.userId !== hashUserIdForStorage(session.userId)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 

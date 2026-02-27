@@ -11,6 +11,7 @@
 import { randomUUID } from "crypto";
 import type { Cart, CartItem } from "@/lib/types";
 import { redis } from "@/lib/redis";
+import { hashUserIdForStorage } from "@/lib/agent/session-store";
 import { productRepo } from "./product-repo";
 
 /** Cart TTL in seconds (2 hours) */
@@ -28,7 +29,7 @@ export const cartRepo = {
   async create(userId: string): Promise<Cart> {
     const cart: Cart = {
       id: randomUUID(),
-      userId,
+      userId: hashUserIdForStorage(userId),
       items: [],
       status: "active",
       total: 0,

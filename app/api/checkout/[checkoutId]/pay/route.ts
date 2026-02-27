@@ -14,7 +14,7 @@ import { z } from "zod";
 import { stripe } from "@/lib/stripe";
 import { cartRepo } from "@/lib/merchant/cart-repo";
 import { productRepo } from "@/lib/merchant/product-repo";
-import { createLogger, redactEmail } from "@/lib/logger";
+import { createLogger } from "@/lib/logger";
 import {
   verifyCheckoutToken,
   CHECKOUT_TOKEN_COOKIE,
@@ -94,7 +94,7 @@ export async function POST(
         metadata: {
           checkoutId,
           cartId: cart.id,
-          userId: redactEmail(cart.userId),
+          userId: cart.userId,
         },
       },
       { idempotencyKey: `pay_${checkoutId}` }

@@ -22,7 +22,7 @@ import { getSession } from "@/lib/auth";
 import { agentRateLimiter, getRetryAfterSeconds, logRateLimitExceeded } from "@/lib/rate-limit";
 import { createToolSet } from "@/lib/agent/tools";
 import { SYSTEM_PROMPT } from "@/lib/agent/system-prompt";
-import { getOrCreateSession } from "@/lib/agent/session-store";
+import { getOrCreateSession, hashUserIdForStorage } from "@/lib/agent/session-store";
 import { createLogger, redactEmail, hashSessionId } from "@/lib/logger";
 
 const log = createLogger("AGENT");
@@ -39,10 +39,11 @@ export async function POST(request: Request) {
 
   const userId = session.userId;
 
-  // 2. Rate limit — per userId (Redis-backed, survives cold starts)
-  const rateResult = await agentRateLimiter.limit(userId);
+  // 2. Rate limit — per hashed userId (PII-safe Redis keys)
+  const hashedUserId = hashUserIdForStorage(userId);
+  const rateResult = await agentRateLimiter.limit(hashedUserId);
   if (!rateResult.success) {
-    logRateLimitExceeded(userId, rateResult);
+    logRateLimitExceeded(hashedUserId, rateResult);
     return NextResponse.json(
       { error: "Rate limit exceeded. Please wait before sending another message." },
       { status: 429, headers: { "Retry-After": String(getRetryAfterSeconds(rateResult)) } }

@@ -15,6 +15,7 @@
  * Persistence: Survives serverless cold starts via Upstash Redis.
  */
 
+import { createHash } from "crypto";
 import type { AgentSessionState } from "@/lib/types";
 import { redis } from "@/lib/redis";
 import { createLogger, redactEmail } from "@/lib/logger";
@@ -49,6 +50,17 @@ function sessionKey(sessionId: string): string {
   return `session:${sessionId}`;
 }
 
+/**
+ * One-way SHA-256 hash of an email address for PII-safe storage in Redis.
+ * Deterministic so the state route can hash the auth email and compare.
+ */
+export function hashUserIdForStorage(email: string): string {
+  return createHash("sha256")
+    .update(email.toLowerCase().trim())
+    .digest("hex")
+    .slice(0, 32);
+}
+
 // ---------------------------------------------------------------------------
 // Public API (all async)
 // ---------------------------------------------------------------------------
@@ -62,7 +74,7 @@ export function createSessionState(
 ): AgentSessionState {
   return {
     sessionId,
-    userId,
+    userId: hashUserIdForStorage(userId),
     cartId: null,
     cartStatus: null,
     cartTotal: null,

@@ -40,9 +40,13 @@ vi.mock("@/lib/agent/system-prompt", () => ({
   SYSTEM_PROMPT: "test-system-prompt",
 }));
 
-vi.mock("@/lib/agent/session-store", () => ({
-  getOrCreateSession: (...args: unknown[]) => mockGetOrCreateSession(...args),
-}));
+vi.mock("@/lib/agent/session-store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/agent/session-store")>();
+  return {
+    ...actual,
+    getOrCreateSession: (...args: unknown[]) => mockGetOrCreateSession(...args),
+  };
+});
 
 vi.mock("@/lib/logger", () => ({
   createLogger: () => ({
@@ -73,6 +77,7 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { POST } from "@/app/api/agent/chat/route";
+import { hashUserIdForStorage } from "@/lib/agent/session-store";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -214,6 +219,6 @@ describe("POST /api/agent/chat", () => {
       })
     );
 
-    expect(mockRateLimiterLimit).toHaveBeenCalledWith("specific@user.com");
+    expect(mockRateLimiterLimit).toHaveBeenCalledWith(hashUserIdForStorage("specific@user.com"));
   });
 });
