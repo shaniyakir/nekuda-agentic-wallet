@@ -207,6 +207,64 @@ describe("merchant tools", () => {
     });
   });
 
+  describe("cart ownership validation", () => {
+    it("addToCart rejects cart owned by another user", async () => {
+      const cart = await exec(tools.createCart, {}, toolOpts);
+
+      const attackerTools = createToolSet({ sessionId: `attacker-${Date.now()}`, userId: "attacker@evil.com" });
+      await getOrCreateSession(`attacker-${Date.now()}`, "attacker@evil.com");
+
+      const result = await exec(attackerTools.addToCart,
+        { cartId: cart.cartId, productId: "prod_001", quantity: 1 },
+        toolOpts
+      );
+      expect(result).toHaveProperty("error");
+      expect(result.error).toContain("does not belong");
+    });
+
+    it("removeFromCart rejects cart owned by another user", async () => {
+      const cart = await exec(tools.createCart, {}, toolOpts);
+      await exec(tools.addToCart,
+        { cartId: cart.cartId, productId: "prod_001", quantity: 1 },
+        toolOpts
+      );
+
+      const attackerTools = createToolSet({ sessionId: `attacker-${Date.now()}`, userId: "attacker@evil.com" });
+
+      const result = await exec(attackerTools.removeFromCart,
+        { cartId: cart.cartId, productId: "prod_001" },
+        toolOpts
+      );
+      expect(result).toHaveProperty("error");
+      expect(result.error).toContain("does not belong");
+    });
+
+    it("checkoutCart rejects cart owned by another user", async () => {
+      const cart = await exec(tools.createCart, {}, toolOpts);
+      await exec(tools.addToCart,
+        { cartId: cart.cartId, productId: "prod_001", quantity: 1 },
+        toolOpts
+      );
+
+      const attackerTools = createToolSet({ sessionId: `attacker-${Date.now()}`, userId: "attacker@evil.com" });
+
+      const result = await exec(attackerTools.checkoutCart,
+        { cartId: cart.cartId },
+        toolOpts
+      );
+      expect(result).toHaveProperty("error");
+      expect(result.error).toContain("does not belong");
+    });
+
+    it("addToCart allows the cart owner", async () => {
+      const cart = await exec(tools.createCart, {}, toolOpts);
+      const result = await exec(tools.addToCart,
+        { cartId: cart.cartId, productId: "prod_001", quantity: 1 },
+        toolOpts
+      );
+      expect(result).not.toHaveProperty("error");
+    });
+  });
 });
 
 describe("system prompt", () => {

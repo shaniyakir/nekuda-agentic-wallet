@@ -36,6 +36,7 @@ import {
   closeBrowser,
 } from "@/lib/agent/browser";
 import { generateCheckoutToken } from "@/lib/agent/checkout-token";
+import { hashUserIdForStorage } from "@/lib/agent/session-store";
 
 const log = createLogger("AGENT");
 
@@ -101,6 +102,10 @@ export function createToolSet(meta: ToolMeta) {
         quantity: z.number().int().positive().default(1),
       }),
       execute: async ({ cartId, productId, quantity }) => {
+        const cart = await cartRepo.get(cartId);
+        if (!cart) return { error: "Cart not found" };
+        if (cart.userId !== hashUserIdForStorage(userId)) return { error: "Cart does not belong to this user" };
+
         const result = await cartRepo.addItem(cartId, productId, quantity);
         if ("error" in result) {
           log.warn("addToCart failed", { error: result.error, cartId, productId });
@@ -126,6 +131,10 @@ export function createToolSet(meta: ToolMeta) {
         productId: z.string(),
       }),
       execute: async ({ cartId, productId }) => {
+        const cart = await cartRepo.get(cartId);
+        if (!cart) return { error: "Cart not found" };
+        if (cart.userId !== hashUserIdForStorage(userId)) return { error: "Cart does not belong to this user" };
+
         const result = await cartRepo.removeItem(cartId, productId);
         if ("error" in result) return { error: result.error };
         await updateSession(sessionId, { cartTotal: result.total });
@@ -141,6 +150,10 @@ export function createToolSet(meta: ToolMeta) {
         cartId: z.string().describe("Cart ID to checkout"),
       }),
       execute: async ({ cartId }) => {
+        const cart = await cartRepo.get(cartId);
+        if (!cart) return { error: "Cart not found" };
+        if (cart.userId !== hashUserIdForStorage(userId)) return { error: "Cart does not belong to this user" };
+
         const result = await cartRepo.checkout(cartId);
         if ("error" in result) {
           log.warn("checkoutCart failed", { error: result.error, cartId });

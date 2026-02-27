@@ -22,10 +22,7 @@ export async function GET(
 
   const state = await getSession(sessionId);
   if (!state) {
-    return NextResponse.json(
-      { error: "Session not found" },
-      { status: 404 }
-    );
+    return NextResponse.json({ state: null });
   }
 
   if (state.userId !== hashUserIdForStorage(auth.userId)) {

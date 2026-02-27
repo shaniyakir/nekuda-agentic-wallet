@@ -73,12 +73,14 @@ describe("GET /api/agent/state/[sessionId]", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns 404 when session does not exist", async () => {
+  it("returns 200 with null state when session does not exist", async () => {
     mockGetAuthSession.mockResolvedValue({ userId: TEST_EMAIL });
     mockGetSession.mockReturnValue(null);
 
     const res = await GET(makeRequest(), makeParams(TEST_SESSION_ID));
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.state).toBeNull();
     expect(mockGetSession).toHaveBeenCalledWith(TEST_SESSION_ID);
   });
 

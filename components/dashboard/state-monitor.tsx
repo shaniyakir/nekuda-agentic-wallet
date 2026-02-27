@@ -33,16 +33,16 @@ export function StateMonitor() {
     if (!chatId) return;
     try {
       const res = await fetch(`/api/agent/state/${encodeURIComponent(chatId)}`);
-      if (res.status === 404) {
-        setState(null);
-        setFetchError(null);
-        return;
-      }
       if (!res.ok) {
         setFetchError(`HTTP ${res.status}`);
         return;
       }
       const data = await res.json();
+      if (data.state === null) {
+        setState(null);
+        setFetchError(null);
+        return;
+      }
       setState(data);
       setFetchError(null);
       setLastFetch(new Date());
